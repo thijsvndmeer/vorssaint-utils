@@ -927,6 +927,7 @@ enum DefaultsKey {
     static let notchAgentsCodexProfiles = "notchAgentsCodexProfiles"
     static let notchAgentsOpenCode = "notchAgentsOpenCode"
     static let notchAgentsCopilot = "notchAgentsCopilot"
+    static let notchAgentsAntigravity = "notchAgentsAntigravity"
     static let notchAgentsCardOrder = "notchAgentsCardOrder"
     static let notchAgentsHiddenCards = "notchAgentsHiddenCards"
     static let notchAgentsPeriod = "notchAgentsPeriod"
@@ -958,6 +959,19 @@ enum DefaultsKey {
     static let notchCoversMenus = "notchCoversMenus"
     static let notchLowBatteryTint = "notchLowBatteryTint"
     static let notchLowBatteryThreshold = "notchLowBatteryThreshold"
+    static let notchLightsEnabled = "notchLightsEnabled"
+    static let notchHaloStyle = "notchHaloStyle"
+    static let notchHaloArmWidth = "notchHaloArmWidth"
+    static let notchHaloThickness = "notchHaloThickness"
+    static let notchHaloEntry = "notchHaloEntry"
+    static let notchHaloMotion = "notchHaloMotion"
+    static let notchHaloTransition = "notchHaloTransition"
+    static let notchEdgeWaveEnabled = "notchEdgeWaveEnabled"
+    static let notchLightSurfaceStyle = "notchLightSurfaceStyle"
+    static let notchLightsAgentActivity = "notchLightsAgentActivity"
+    static let notchLightsMusicActivity = "notchLightsMusicActivity"
+    static let notchLightsCopySweep = "notchLightsCopySweep"
+    static let notchLightsNotices = "notchLightsNotices"
     static let notchLowBatteryEarly = "notchLowBatteryEarly"
     static let notchLowBatteryEarlyThreshold = "notchLowBatteryEarlyThreshold"
     static let notchLowBatteryMenuBar = "notchLowBatteryMenuBar"
@@ -1535,6 +1549,7 @@ enum Defaults {
         DefaultsKey.notchAgentsCodexProfiles: "",
         DefaultsKey.notchAgentsOpenCode: true,
         DefaultsKey.notchAgentsCopilot: true,
+        DefaultsKey.notchAgentsAntigravity: true,
         DefaultsKey.notchAgentsCardOrder: "",
         DefaultsKey.notchAgentsHiddenCards: "",
         DefaultsKey.notchAgentsPeriod: AgentPeriod.today.rawValue,
@@ -1563,6 +1578,19 @@ enum Defaults {
         DefaultsKey.notchCapsuleFitWidth: 0.0,
         DefaultsKey.notchCapsuleFitHeight: 0.0,
         DefaultsKey.notchCapsuleFitDrop: 0.0,
+        DefaultsKey.notchLightsEnabled: true,
+        DefaultsKey.notchHaloStyle: NotchHaloStyle.rays.rawValue,
+        DefaultsKey.notchHaloArmWidth: NotchHaloArmWidth.medium.rawValue,
+        DefaultsKey.notchHaloThickness: 1.0,
+        DefaultsKey.notchHaloEntry: NotchHaloEntryMode.sweep.rawValue,
+        DefaultsKey.notchHaloMotion: NotchHaloMotion.ondulation.rawValue,
+        DefaultsKey.notchHaloTransition: NotchHaloTransitionEffect.hybrid.rawValue,
+        DefaultsKey.notchEdgeWaveEnabled: true,
+        DefaultsKey.notchLightSurfaceStyle: NotchLightSurfaceStyle.neon.rawValue,
+        DefaultsKey.notchLightsAgentActivity: true,
+        DefaultsKey.notchLightsMusicActivity: true,
+        DefaultsKey.notchLightsCopySweep: true,
+        DefaultsKey.notchLightsNotices: true,
         DefaultsKey.notchOpenOnHover: false,
         DefaultsKey.notchShortcutEnabled: false,
         DefaultsKey.notchShortcut: GlobalShortcut.notchDefault.storageValue,

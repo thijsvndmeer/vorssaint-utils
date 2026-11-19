@@ -1220,6 +1220,8 @@ final class NotchService: ObservableObject {
         }
         if captureControls != nil, !NotchSupport.routesCaptureControls() { cancelCaptureControls() }
         syncNoticeWithPreferences()
+        NotchHaloController.shared.syncWithPreferences()
+        syncHaloLayout()
         syncVisibleConsumers()
         // Turning the companion on or off grows or folds the wings it rests
         // in, in view, as music arriving does, and so does hiding it in the
@@ -1346,6 +1348,7 @@ final class NotchService: ObservableObject {
         NotchCalendarService.shared.stop()
         NotchNotificationService.shared.stop()
         AgentUsageService.shared.pause()
+        NotchHaloController.shared.stop()
         settingsSignature = ""
         expanded = false
         peeking = false
@@ -4261,7 +4264,12 @@ final class NotchService: ObservableObject {
                     self?.syncMenuSpaceMonitoring()
                     self?.objectWillChange.send()
                     self?.refreshPresentation()
+                    NotchHaloController.shared.updateAgentSessions(AgentUsageService.shared.snapshot.live)
                 }.store(in: &subscriptions)
+            AgentUsageService.shared.events
+                .receive(on: DispatchQueue.main)
+                .sink { NotchHaloController.shared.triggerAgentEvent($0) }
+                .store(in: &subscriptions)
             // An added or removed Codex account adds or removes a card.
             CodexProfileLimitsService.shared.$states
                 .map { $0.map(\.id) }
@@ -4340,8 +4348,54 @@ final class NotchService: ObservableObject {
                                       detail: text.title, symbol: "doc.on.clipboard"))
             }.store(in: &subscriptions)
         }
+        if AppFeature.clipboardHistory.isAvailable {
+            ClipboardHistoryService.shared.capturedEntry
+                .receive(on: DispatchQueue.main)
+                .sink { _ in NotchHaloController.shared.triggerCopySweep() }
+                .store(in: &subscriptions)
+        }
+        NotchMusicService.shared.$playback.combineLatest(NotchMusicService.shared.$artworkTint)
+            .receive(on: DispatchQueue.main)
+            .sink { playback, tint in
+                NotchHaloController.shared.updateMusic(playing: playback?.isPlaying == true, tint: tint)
+            }.store(in: &subscriptions)
+        $notice.compactMap { $0 }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { NotchHaloController.shared.triggerNotice($0) }
+            .store(in: &subscriptions)
+        Publishers.MergeMany([
+            $geometry.map { _ in () }.eraseToAnyPublisher(),
+            $expanded.map { _ in () }.eraseToAnyPublisher(),
+            $peeking.map { _ in () }.eraseToAnyPublisher(),
+            $hiddenInFullscreen.map { _ in () }.eraseToAnyPublisher(),
+            $departingNotice.map { _ in () }.eraseToAnyPublisher(),
+            $dragPlaceholder.map { _ in () }.eraseToAnyPublisher(),
+            $musicStripNamed.map { _ in () }.eraseToAnyPublisher()
+        ])
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] _ in
+            DispatchQueue.main.async { self?.syncHaloLayout() }
+        }.store(in: &subscriptions)
+        syncHaloLayout()
         // The companion loves being plugged in, so it listens for the charger too.
         if NotchSupport.routes(.battery) || idleContent == .battery || NotchMascotSupport.isEnabled() { startPower() }
+    }
+
+    private func syncHaloLayout() {
+        var haloGeometry = geometry
+        haloGeometry.surfaceShift = surfaceShift
+        let haloClosedSize = (expanded || peeking || dragPlaceholder || captureControls != nil)
+            ? CGSize(width: geometry.cameraWidth, height: geometry.stripHeight)
+            : surfaceSize
+        NotchHaloController.shared.updateLayout(
+            geometry: haloGeometry,
+            closedSize: haloClosedSize,
+            notchWindowNumber: panel?.windowNumber,
+            visible: running && !fullscreenCompact && !hiddenUntilHover && !hiddenInFullscreen && panel?.isVisible == true,
+            fullscreenHidden: hiddenInFullscreen,
+            screen: panel?.screen ?? NSScreen.main
+        )
     }
 
     private func showAgentEvent(_ event: AgentUsageEvent) {

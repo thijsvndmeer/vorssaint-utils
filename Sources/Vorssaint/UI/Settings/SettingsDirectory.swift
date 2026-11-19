@@ -32,7 +32,8 @@ struct SettingsSearchState: Equatable {
             DefaultsKey.notchHideInFullscreen, DefaultsKey.notchHoverInFullscreen, DefaultsKey.notchOpenOnHover,
             DefaultsKey.notchHideUntilHover, DefaultsKey.notchHoverExpands, DefaultsKey.notchAgentsClaude,
             DefaultsKey.notchAgentsLiveActivity, DefaultsKey.notchAgentsFinishAlert, DefaultsKey.notchAgentsLimitAlert,
-            DefaultsKey.notchCommandBar, DefaultsKey.notchMascotVisits, DefaultsKey.monitorAlertCPU,
+            DefaultsKey.notchCommandBar, DefaultsKey.notchMascotVisits, DefaultsKey.notchLightsEnabled,
+            DefaultsKey.monitorAlertCPU,
             DefaultsKey.monitorAlertCPUTemperature, DefaultsKey.monitorAlertDisk,
             DefaultsKey.monitorAlertBattery, DefaultsKey.monitorAlertBatteryTemperature,
         ].filter { defaults.bool(forKey: $0) })
@@ -255,6 +256,7 @@ enum SettingsDirectory {
         }
 #endif
         let mascot = FeatureStrings.notchMascot(language)
+        let notchLights = NotchLightsStrings.localized(language)
         let activities = FeatureStrings.notchActivities(language)
         let lockScreen = FeatureStrings.notchLockScreen(language)
         let hover = state.on(DefaultsKey.notchOpenOnHover)
@@ -284,7 +286,7 @@ enum SettingsDirectory {
             .init([FeatureStrings.notchClipboardSize(language).entrySize], feature: .clipboardHistory,
                   notch: .module(.clipboard), when: state.on(DefaultsKey.notchClipboardWindow)),
             .init(["camera"], feature: .cameraPreview, notch: .module(.camera)),
-            .init([notchAgents.title, "Claude", "Codex", "OpenCode", "GitHub Copilot", "AI", "tokens", notchAgents.resetsCard,
+            .init([notchAgents.title, "Claude", "Codex", "OpenCode", "GitHub Copilot", "Antigravity", "AI", "tokens", notchAgents.resetsCard,
                    notchAgents.limitsAs, notchAgents.limitFocus, notchAgents.liveActivity, notchAgents.finishAlert,
                    notchAgents.limitAlert, notchAgents.budget, notchAgents.priceUpdates], feature: .notchAgents, notch: .module(.agents)),
             .init([notchAgents.readout], feature: .notchAgents, notch: .module(.agents), when: state.on(DefaultsKey.notchAgentsLiveActivity)),
@@ -294,6 +296,11 @@ enum SettingsDirectory {
                   notch: .module(.agents), when: state.on(DefaultsKey.notchAgentsClaude)),
             .init([notchEditor.activity, notchEditor.resting, notch.coverMenus, notchEditor.feedback, notch.inputSource,
                    notch.newTrack, lockScreen.title, lockScreen.sounds, lockScreen.show], notch: .activity),
+            .init([notchLights.title, notchLights.enable, "laser", "halo", "edge wave"], notch: .activity),
+            .init([notchLights.style, notchLights.armWidth, notchLights.thickness, notchLights.entry,
+                   notchLights.motion, notchLights.transition, notchLights.edgeWave, notchLights.lightSurface,
+                   notchLights.agentActivity, notchLights.musicActivity, notchLights.copySweep,
+                   notchLights.notices, notchLights.preview], notch: .activity, when: state.on(DefaultsKey.notchLightsEnabled)),
             .init([notchLowBattery.title], feature: .monitorPower, notch: .activity, when: batteryRest),
             .init([notchLowBattery.threshold, notchLowBattery.early, notchLowBattery.menuBar],
                   feature: .monitorPower, notch: .activity, when: tintedBattery),

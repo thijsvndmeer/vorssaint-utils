@@ -76,6 +76,102 @@ struct NotchMeter: View {
     }
 }
 
+/// Glance-inspired luminous prism bar used for Audio (Volume/Mute) and
+/// Brightness / Keyboard-Light HUD overlays inside the notch.
+struct NotchGlanceLevelBar: View {
+    let value: Double
+    let kind: NotchLevelBarKind
+    var muted: Bool = false
+    var height: CGFloat = 5
+
+    var body: some View {
+        let fraction = muted ? 0.0 : (value.isFinite ? min(1, max(0, value)) : 0)
+        let prism = NotchLevelPrismPalette.palette(for: kind, muted: muted)
+        GeometryReader { proxy in
+            let fillWidth = max(fraction > 0 ? height : 0, proxy.size.width * fraction)
+            ZStack(alignment: .leading) {
+                Capsule(style: .continuous)
+                    .fill(.white.opacity(0.14))
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
+                    }
+                if muted && kind == .volume {
+                    Capsule(style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [prism.trail.color.opacity(0.45), prism.lead.color.opacity(0.55)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: max(height * 1.4, proxy.size.width * 0.08))
+                        .shadow(color: prism.lead.color.opacity(0.55), radius: 3)
+                } else if fraction > 0 {
+                    ZStack(alignment: .trailing) {
+                        Capsule(style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [prism.trail.color, prism.lead.color, prism.core.color],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                        if fillWidth > height * 1.6 {
+                            Circle()
+                                .fill(Color.white.opacity(0.9))
+                                .frame(width: max(2.5, height - 1), height: max(2.5, height - 1))
+                                .padding(.trailing, 1)
+                        }
+                    }
+                    .frame(width: fillWidth)
+                    .shadow(color: prism.lead.color.opacity(0.65), radius: 4, x: 0, y: 0)
+                }
+            }
+        }
+        .frame(height: height)
+        .accessibilityHidden(true)
+    }
+
+    static func levelKind(for event: NotchEvent) -> NotchLevelBarKind? {
+        switch event {
+        case .volume: return .volume
+        case .brightness: return .brightness
+        case .keyboardLight: return .keyboardLight
+        default: return nil
+        }
+    }
+
+    static func usesGlanceBars() -> Bool {
+        NotchLightsSupport.isEnabled() && NotchLightsSupport.tracksLevelBars()
+    }
+
+    static func displaySymbol(for notice: NotchNotice) -> String {
+        guard usesGlanceBars(), let level = notice.level else { return notice.symbol }
+        switch notice.event {
+        case .volume:
+            guard notice.symbol == "speaker.wave.2.fill" || notice.symbol == "speaker.slash.fill" else {
+                return notice.symbol
+            }
+            if level <= 0.001 { return "speaker.slash.fill" }
+            if level < 0.34 { return "speaker.wave.1.fill" }
+            if level < 0.67 { return "speaker.wave.2.fill" }
+            return "speaker.wave.3.fill"
+        case .brightness:
+            guard notice.symbol == "sun.max.fill" else { return notice.symbol }
+            return level < 0.5 ? "sun.min.fill" : "sun.max.fill"
+        default:
+            return notice.symbol
+        }
+    }
+
+    static func accentColor(for notice: NotchNotice) -> Color {
+        guard usesGlanceBars(), let kind = levelKind(for: notice.event) else { return .white }
+        let muted = kind == .volume && (notice.level ?? 0) <= 0.001
+        return NotchLevelPrismPalette.palette(for: kind, muted: muted).lead.color
+    }
+}
+
 /// A clock's digits roll into the next reading, downward while it counts
 /// down and upward while it counts up; Reduce Motion changes them in place.
 struct NotchRollingDigits: ViewModifier {

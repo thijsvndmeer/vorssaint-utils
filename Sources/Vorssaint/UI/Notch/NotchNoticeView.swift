@@ -19,6 +19,7 @@ struct NotchNoticeView: View {
         case .agents: return notice.symbol.hasPrefix("exclamationmark") ? .orange : notice.agent?.tint ?? .white
         // The timer's notice keeps the orange its strip and page wear.
         case .timer: return .orange
+        case .volume, .brightness, .keyboardLight: return NotchGlanceLevelBar.accentColor(for: notice)
         default: return .white
         }
     }
@@ -95,7 +96,7 @@ struct NotchNoticeView: View {
                     } else if notice.event == .track {
                         NotchTrackArtwork(size: min(18, geometry.stripHeight - 6))
                     } else {
-                        Image(systemName: notice.symbol)
+                        Image(systemName: NotchGlanceLevelBar.displaySymbol(for: notice))
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(tint)
                     }
@@ -127,9 +128,15 @@ struct NotchNoticeView: View {
                 .lineLimit(NotchNotificationBannerLayout.messageLines(stripHeight: geometry.stripHeight))
                 .frame(maxWidth: .infinity, alignment: .trailing)
         } else if let level = notice.level {
-            NotchMeter(value: level, height: 5, tint: tint)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: level)
-                .transaction { $0.disablesAnimations = false }
+            Group {
+                if let kind = NotchGlanceLevelBar.levelKind(for: notice.event), NotchGlanceLevelBar.usesGlanceBars() {
+                    NotchGlanceLevelBar(value: level, kind: kind, muted: kind == .volume && level <= 0.001, height: 5)
+                } else {
+                    NotchMeter(value: level, height: 5, tint: tint)
+                }
+            }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: level)
+            .transaction { $0.disablesAnimations = false }
         } else {
             Text(notice.detail)
                 .font(.system(size: 11, weight: .medium))
@@ -157,11 +164,20 @@ struct NotchExpandedLevelView: View {
     var showsDetail = true
 
     var body: some View {
+        let tint = NotchGlanceLevelBar.accentColor(for: notice)
+        let level = notice.level ?? 0
         HStack(spacing: 8) {
-            Image(systemName: notice.symbol)
+            Image(systemName: NotchGlanceLevelBar.displaySymbol(for: notice))
+                .foregroundStyle(tint)
                 .frame(width: 18)
-            NotchMeter(value: notice.level ?? 0, height: 5, tint: .white)
-                .frame(maxWidth: 96)
+            Group {
+                if let kind = NotchGlanceLevelBar.levelKind(for: notice.event), NotchGlanceLevelBar.usesGlanceBars() {
+                    NotchGlanceLevelBar(value: level, kind: kind, muted: kind == .volume && level <= 0.001, height: 5)
+                } else {
+                    NotchMeter(value: level, height: 5, tint: .white)
+                }
+            }
+            .frame(maxWidth: 96)
             if showsDetail {
                 Text(notice.detail)
                     .monospacedDigit()

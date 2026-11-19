@@ -3657,6 +3657,10 @@ final class NotchService: ObservableObject {
             windowHost?.missionControlDidRestore = { [weak self] in self?.missionControlDidRestore() }
             windowHost?.setHoverHandler { [weak self] in self?.hover($0) }
             panel?.title = FeatureStrings.notch(L10n.shared.language).title
+            if let host = windowHost {
+                NotchHaloController.shared.attach(to: host)
+                syncHaloLayout()
+            }
         }
         if modules.contains(.files), AppFeature.shelf.isAvailable {
             windowHost?.setFileDropActions(NotchFileDropActions(
@@ -4383,11 +4387,12 @@ final class NotchService: ObservableObject {
     }
 
     private func syncHaloLayout() {
+        if let host = windowHost {
+            NotchHaloController.shared.attach(to: host)
+        }
         var haloGeometry = geometry
         haloGeometry.surfaceShift = surfaceShift
-        let haloClosedSize = (expanded || peeking || dragPlaceholder || captureControls != nil)
-            ? CGSize(width: geometry.cameraWidth, height: geometry.stripHeight)
-            : surfaceSize
+        let haloClosedSize = surfaceSize
         NotchHaloController.shared.updateLayout(
             geometry: haloGeometry,
             closedSize: haloClosedSize,

@@ -972,6 +972,9 @@ enum DefaultsKey {
     static let notchLightsMusicActivity = "notchLightsMusicActivity"
     static let notchLightsCopySweep = "notchLightsCopySweep"
     static let notchLightsNotices = "notchLightsNotices"
+    static let notchOutlineTheme = "notchOutlineTheme"
+    static let notchLightsRestingOutline = "notchLightsRestingOutline"
+    static let notchLightsLevelBars = "notchLightsLevelBars"
     static let notchLowBatteryEarly = "notchLowBatteryEarly"
     static let notchLowBatteryEarlyThreshold = "notchLowBatteryEarlyThreshold"
     static let notchLowBatteryMenuBar = "notchLowBatteryMenuBar"
@@ -1591,6 +1594,9 @@ enum Defaults {
         DefaultsKey.notchLightsMusicActivity: true,
         DefaultsKey.notchLightsCopySweep: true,
         DefaultsKey.notchLightsNotices: true,
+        DefaultsKey.notchOutlineTheme: NotchOutlineTheme.adaptive.rawValue,
+        DefaultsKey.notchLightsRestingOutline: false,
+        DefaultsKey.notchLightsLevelBars: true,
         DefaultsKey.notchOpenOnHover: false,
         DefaultsKey.notchShortcutEnabled: false,
         DefaultsKey.notchShortcut: GlobalShortcut.notchDefault.storageValue,

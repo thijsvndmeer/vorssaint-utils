@@ -3,12 +3,15 @@
 
 import SwiftUI
 
-/// Glance-inspired laser halos, screen-edge waves, and surface finish options
-/// rendered under Dynamic Island Settings -> Activity.
+/// Glance-inspired laser halos, outline color themes, Audio & Brightness prism
+/// level bars, screen-edge waves, and surface finish options under Dynamic Island
+/// Settings -> Activity.
 struct NotchLightsSettingsCard: View {
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(DefaultsKey.notchLightsEnabled) private var lightsEnabled = true
     @AppStorage(DefaultsKey.notchHaloStyle) private var haloStyle = NotchHaloStyle.rays.rawValue
+    @AppStorage(DefaultsKey.notchOutlineTheme) private var outlineTheme = NotchOutlineTheme.adaptive.rawValue
+    @AppStorage(DefaultsKey.notchLightsRestingOutline) private var restingOutline = false
     @AppStorage(DefaultsKey.notchHaloArmWidth) private var armWidth = NotchHaloArmWidth.medium.rawValue
     @AppStorage(DefaultsKey.notchHaloThickness) private var thickness = 1.0
     @AppStorage(DefaultsKey.notchHaloEntry) private var entryMode = NotchHaloEntryMode.sweep.rawValue
@@ -20,6 +23,7 @@ struct NotchLightsSettingsCard: View {
     @AppStorage(DefaultsKey.notchLightsMusicActivity) private var musicActivity = true
     @AppStorage(DefaultsKey.notchLightsCopySweep) private var copySweep = true
     @AppStorage(DefaultsKey.notchLightsNotices) private var notices = true
+    @AppStorage(DefaultsKey.notchLightsLevelBars) private var levelBars = true
 
     var body: some View {
         let lights = NotchLightsStrings.localized(l10n.language)
@@ -34,6 +38,16 @@ struct NotchLightsSettingsCard: View {
                     ForEach(NotchHaloStyle.allCases) { item in
                         Text(lights.styleName(item)).tag(item.rawValue)
                     }
+                }
+                SettingsMenuRow(symbol: "paintpalette", title: lights.outlineTheme, selection: $outlineTheme) {
+                    ForEach(NotchOutlineTheme.allCases) { item in
+                        Text(lights.outlineThemeName(item)).tag(item.rawValue)
+                    }
+                }
+                SettingsRow(symbol: "circle.dotted", title: lights.restingOutline, caption: lights.restingOutlineHint) {
+                    Toggle(lights.restingOutline, isOn: $restingOutline)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
                 }
                 SettingsChoiceRow(symbol: "arrow.left.and.right", title: lights.armWidth, selection: $armWidth) {
                     ForEach(NotchHaloArmWidth.allCases) { item in
@@ -84,6 +98,11 @@ struct NotchLightsSettingsCard: View {
                     .foregroundStyle(.secondary)
                     .padding(.leading, settingsRowTextInset)
                 Divider()
+                SettingsRow(symbol: "speaker.wave.2", title: lights.levelBars, caption: lights.levelBarsHint) {
+                    Toggle(lights.levelBars, isOn: $levelBars)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
                 SettingsRow(symbol: "cpu", title: lights.agentActivity) {
                     Toggle(lights.agentActivity, isOn: $agentActivity)
                         .labelsHidden()
@@ -110,6 +129,12 @@ struct NotchLightsSettingsCard: View {
                         Button(lights.previewHalo) {
                             NotchHaloController.shared.previewHalo()
                         }
+                        Button(lights.previewAudio) {
+                            NotchHaloController.shared.previewLevelBar(.volume)
+                        }
+                        Button(lights.previewBrightness) {
+                            NotchHaloController.shared.previewLevelBar(.brightness)
+                        }
                         Button(lights.previewWave) {
                             NotchHaloController.shared.previewEdgeWave()
                         }
@@ -118,9 +143,9 @@ struct NotchLightsSettingsCard: View {
             }
         }
         .onChange(of: [
-            String(lightsEnabled), haloStyle, armWidth, String(thickness), entryMode, motion, transition,
-            String(edgeWaveEnabled), lightSurfaceStyle, String(agentActivity), String(musicActivity),
-            String(copySweep), String(notices)
+            String(lightsEnabled), haloStyle, outlineTheme, String(restingOutline), armWidth, String(thickness),
+            entryMode, motion, transition, String(edgeWaveEnabled), lightSurfaceStyle,
+            String(agentActivity), String(musicActivity), String(copySweep), String(notices), String(levelBars)
         ]) { _, _ in
             NotchHaloController.shared.syncWithPreferences()
         }

@@ -29,12 +29,19 @@ enum NotchLightsTests {
             DefaultsKey.notchLightsAgentActivity,
             DefaultsKey.notchLightsMusicActivity,
             DefaultsKey.notchLightsCopySweep,
-            DefaultsKey.notchLightsNotices
+            DefaultsKey.notchLightsNotices,
+            DefaultsKey.notchOutlineTheme,
+            DefaultsKey.notchLightsRestingOutline,
+            DefaultsKey.notchLightsLevelBars
         ]
         suite.expect(keys.allSatisfy { Defaults.registeredDefaults[$0] != nil },
                      "all island light defaults are registered")
         suite.expect(SettingsBackupSupport.exportKeys().isSuperset(of: keys),
                      "all island light keys export cleanly with notch backups")
+        suite.expect(NotchOutlineTheme.allCases.count == 8
+                        && NotchLevelPrismPalette.volume != NotchLevelPrismPalette.sunlight
+                        && NotchLevelPrismPalette.silence != NotchLevelPrismPalette.volume,
+                     "outline themes and Glance audio/brightness/silence prism palettes are distinct")
         suite.expect(NotchLightsSupport.clampedThickness(0.1) == 0.6
                         && NotchLightsSupport.clampedThickness(4.5) == 2.0
                         && NotchLightsSupport.clampedThickness(.nan) == 1.0,
@@ -80,6 +87,31 @@ enum NotchLightsTests {
         )
         suite.expect(capsuleFrame.width > 180 + 260 && capsuleFrame.height > 26 + 90,
                      "floating capsule overlay allows bloom margins around arms and contour")
+
+        let closedSize = CGSize(width: 240, height: 38)
+        let exactAttached = NotchLightsSupport.overlayLayout(
+            islandScreenRect: notched.frame(for: closedSize),
+            floatingGap: notched.floatingGap,
+            armRun: 130,
+            thicknessScale: 1.0
+        )
+        suite.expect(exactAttached.islandRect.minY == 0
+                        && exactAttached.islandRect.size == closedSize
+                        && abs(exactAttached.islandRect.midX - exactAttached.overlayScreenRect.width / 2) <= 0.5
+                        && exactAttached.shoulder == NotchLayout.shoulder(height: closedSize.height),
+                     "attached halo overlay maps NotchShape origin and shoulder geometry cleanly")
+
+        let capSize = CGSize(width: 180, height: 24)
+        let exactCapsule = NotchLightsSupport.overlayLayout(
+            islandScreenRect: capsule.frame(for: capSize),
+            floatingGap: capsule.floatingGap,
+            armRun: 130,
+            thicknessScale: 1.0
+        )
+        suite.expect(exactCapsule.floatingGap == capsule.floatingGap
+                        && exactCapsule.islandRect.minY > 0
+                        && exactCapsule.islandRect.size == capSize,
+                     "floating capsule halo reserves top bloom room and preserves capsule gap")
     }
 
     private static func uniformMemoryLayout(_ suite: TestSuite) {

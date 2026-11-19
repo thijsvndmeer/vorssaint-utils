@@ -3,84 +3,119 @@
 
 import SwiftUI
 
-/// Traces Glance's continuous bottom-U notch contour with outward arm wings
-/// (using 0.22 / 0.45 / 0.55 / 0.552 / 0.78 cubic curve handles), or the
-/// rounded floating-capsule perimeter on non-notched displays.
+/// Traces Vorssaint's exact `NotchShape` ("Show Outline") open bottom-U path
+/// with optional outward arm extensions along the menu bar edge, or the exact
+/// floating-capsule perimeter when on a non-notched display.
 struct NotchBottomUShape: Shape {
-    var notchSize: CGSize
+    var islandRect: CGRect
     var armRun: CGFloat
-    var topY: CGFloat
-    var floatingIsland: Bool
+    var floatingGap: CGFloat?
+
+    private static let tangent: CGFloat = 0.55228475
 
     func path(in rect: CGRect) -> Path {
-        let midX = rect.midX
-        let halfW = notchSize.width * 0.5
-        let h = notchSize.height
-
-        if floatingIsland {
-            let capsuleRect = CGRect(
-                x: midX - halfW,
-                y: topY,
-                width: notchSize.width,
-                height: h
-            )
-            let radius = min(h * 0.48, 16)
-            return Path(roundedRect: capsuleRect, cornerRadius: radius, style: .continuous)
+        if let floatingGap {
+            let capsule = Path(NotchLayout.capsulePath(in: islandRect, gap: floatingGap))
+            guard armRun > 0 else { return capsule }
+            let body = NotchLayout.capsuleBody(in: islandRect, gap: floatingGap)
+            var p = capsule
+            let midY = body.midY
+            p.move(to: CGPoint(x: max(rect.minX, body.minX - armRun), y: midY))
+            p.addLine(to: CGPoint(x: body.minX, y: midY))
+            p.move(to: CGPoint(x: body.maxX, y: midY))
+            p.addLine(to: CGPoint(x: min(rect.maxX, body.maxX + armRun), y: midY))
+            return p
         }
 
-        let topShoulder: CGFloat = min(14, halfW * 0.22)
-        let bottomCorner: CGFloat = min(16, h * 0.48)
-        let leftArmStart = midX - halfW - armRun
-        let leftEdge = midX - halfW
-        let rightEdge = midX + halfW
-        let rightArmEnd = midX + halfW + armRun
-        let bottomY = topY + h
+        let w = islandRect.width
+        let h = islandRect.height
+        let shoulder = NotchLayout.shoulder(height: h)
+        let radius = NotchLayout.surfaceRadius(height: h)
+        let bottom = min(radius, h / 2, max(0, (w - shoulder * 2) / 2))
+        let t = Self.tangent
+
+        let minX = islandRect.minX
+        let maxX = islandRect.maxX
+        let minY = islandRect.minY
+        let maxY = islandRect.maxY
 
         var p = Path()
-        p.move(to: CGPoint(x: leftArmStart, y: topY))
-        p.addLine(to: CGPoint(x: leftEdge - topShoulder, y: topY))
-
-        // Top-left transition into vertical wall
-        p.addCurve(
-            to: CGPoint(x: leftEdge, y: topY + topShoulder),
-            control1: CGPoint(x: leftEdge - topShoulder * 0.45, y: topY),
-            control2: CGPoint(x: leftEdge, y: topY + topShoulder * 0.45)
-        )
-
-        let straightDrop = max(0, h - topShoulder - bottomCorner)
-        if straightDrop > 0.5 {
-            p.addLine(to: CGPoint(x: leftEdge, y: topY + topShoulder + straightDrop))
+        if armRun > 0 {
+            p.move(to: CGPoint(x: minX - armRun, y: minY))
+            p.addLine(to: CGPoint(x: minX, y: minY))
+        } else {
+            p.move(to: CGPoint(x: minX, y: minY))
         }
 
-        // Bottom-left continuous curve
+        // Top-left outward shoulder ear (matches NotchShape verbatim)
         p.addCurve(
-            to: CGPoint(x: leftEdge + bottomCorner, y: bottomY),
-            control1: CGPoint(x: leftEdge, y: bottomY - bottomCorner * 0.22),
-            control2: CGPoint(x: leftEdge + bottomCorner * 0.45, y: bottomY)
+            to: CGPoint(x: minX + shoulder, y: minY + shoulder),
+            control1: CGPoint(x: minX + shoulder * t, y: minY),
+            control2: CGPoint(x: minX + shoulder, y: minY + shoulder * (1 - t))
+        )
+        p.addLine(to: CGPoint(x: minX + shoulder, y: maxY - bottom))
+
+        // Bottom-left corner
+        p.addCurve(
+            to: CGPoint(x: minX + shoulder + bottom, y: maxY),
+            control1: CGPoint(x: minX + shoulder, y: maxY - bottom * (1 - t)),
+            control2: CGPoint(x: minX + shoulder + bottom * (1 - t), y: maxY)
+        )
+        p.addLine(to: CGPoint(x: maxX - shoulder - bottom, y: maxY))
+
+        // Bottom-right corner
+        p.addCurve(
+            to: CGPoint(x: maxX - shoulder, y: maxY - bottom),
+            control1: CGPoint(x: maxX - shoulder - bottom * (1 - t), y: maxY),
+            control2: CGPoint(x: maxX - shoulder, y: maxY - bottom * (1 - t))
+        )
+        p.addLine(to: CGPoint(x: maxX - shoulder, y: minY + shoulder))
+
+        // Top-right outward shoulder ear
+        p.addCurve(
+            to: CGPoint(x: maxX, y: minY),
+            control1: CGPoint(x: maxX - shoulder, y: minY + shoulder * (1 - t)),
+            control2: CGPoint(x: maxX - shoulder * t, y: minY)
         )
 
-        p.addLine(to: CGPoint(x: rightEdge - bottomCorner, y: bottomY))
-
-        // Bottom-right continuous curve
-        p.addCurve(
-            to: CGPoint(x: rightEdge, y: bottomY - bottomCorner),
-            control1: CGPoint(x: rightEdge - bottomCorner * 0.45, y: bottomY),
-            control2: CGPoint(x: rightEdge, y: bottomY - bottomCorner * 0.22)
-        )
-
-        if straightDrop > 0.5 {
-            p.addLine(to: CGPoint(x: rightEdge, y: topY + topShoulder))
+        if armRun > 0 {
+            p.addLine(to: CGPoint(x: maxX + armRun, y: minY))
         }
-
-        // Top-right transition out to right wing
-        p.addCurve(
-            to: CGPoint(x: rightEdge + topShoulder, y: topY),
-            control1: CGPoint(x: rightEdge, y: topY + topShoulder * 0.45),
-            control2: CGPoint(x: rightEdge + topShoulder * 0.45, y: topY)
-        )
-
-        p.addLine(to: CGPoint(x: rightArmEnd, y: topY))
         return p
+    }
+}
+
+/// Exact closed fill silhouette matching Vorssaint's `NotchShape`, positioned
+/// at `islandRect` inside the halo overlay coordinate space.
+struct NotchClosedShellShape: Shape {
+    var islandRect: CGRect
+    var floatingGap: CGFloat?
+
+    func path(in rect: CGRect) -> Path {
+        let local = NotchShape(
+            attached: true,
+            radius: NotchLayout.surfaceRadius(height: islandRect.height),
+            floatingGap: floatingGap
+        ).path(in: CGRect(origin: .zero, size: islandRect.size))
+        return local.offsetBy(dx: islandRect.minX, dy: islandRect.minY)
+    }
+}
+
+/// Punches out the exact interior of Vorssaint's notch (Glance `outsideShellMask`
+/// pattern) so glow, blur, rays, and level bars remain strictly outside and
+/// never bleed into or lighten the black notch surface.
+struct NotchOutsideShellMask: View {
+    let islandRect: CGRect
+    let floatingGap: CGFloat?
+
+    var body: some View {
+        ZStack {
+            Rectangle().fill(.white)
+            NotchClosedShellShape(islandRect: islandRect, floatingGap: floatingGap)
+                .fill(.black)
+                .blendMode(.destinationOut)
+        }
+        .compositingGroup()
     }
 }
 

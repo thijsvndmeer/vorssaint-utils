@@ -7,8 +7,8 @@ import Foundation
 import SwiftUI
 
 /// Orchestrates the click-through halo NSPanel directly behind Vorssaint's notch
-/// island and triggers the screen-edge Metal wave on agent completions, alerts,
-/// music playback, clipboard copies, and Settings previews.
+/// island and triggers the screen-edge Metal wave on agent completions, volume
+/// and brightness adjustments, music playback, clipboard copies, and Settings previews.
 final class NotchHaloController {
     static let shared = NotchHaloController()
 
@@ -19,6 +19,9 @@ final class NotchHaloController {
     private var hostingView: NSHostingView<NotchHaloView>?
     private var cancellables: Set<AnyCancellable> = []
 
+    private weak var attachedHost: NotchWindowHost?
+    private var lastIslandScreenRect: CGRect?
+    private var lastFloatingGap: CGFloat? = nil
     private var lastGeometry: NotchGeometry?
     private var lastClosedSize = CGSize(width: 185, height: 32)
     private var lastNotchWindowNumber: Int?
@@ -47,8 +50,27 @@ final class NotchHaloController {
         syncWithPreferences()
     }
 
+    func attach(to host: NotchWindowHost) {
+        if attachedHost !== host {
+            attachedHost = host
+            if let panel {
+                host.attachBackgroundOverlay(panel)
+            }
+            host.onSilhouetteChange = { [weak self] rect, gap, windowNumber, _, screen in
+                guard let self else { return }
+                self.lastIslandScreenRect = rect
+                self.lastFloatingGap = gap
+                self.lastNotchWindowNumber = windowNumber
+                if let screen { self.lastScreen = screen }
+                self.repositionPanel()
+            }
+        }
+    }
+
     func syncWithPreferences() {
         viewModel.style = NotchLightsSupport.style()
+        let theme = NotchLightsSupport.outlineTheme()
+        viewModel.outlineTheme = theme
         viewModel.armWidth = NotchLightsSupport.armWidth()
         viewModel.thicknessScale = NotchLightsSupport.thickness()
         viewModel.entryMode = NotchLightsSupport.entryMode()
@@ -57,9 +79,20 @@ final class NotchHaloController {
         viewModel.surfaceStyle = NotchLightsSupport.lightSurfaceStyle()
         viewModel.isLightSurface = surfaceProbe.isLightSurface
 
-        if !NotchLightsSupport.isEnabled() || !NotchSupport.isEnabled() {
+        guard NotchLightsSupport.isEnabled(), NotchSupport.isEnabled() else {
+            viewModel.restingOutlineActive = false
             stop()
             return
+        }
+
+        let resting = NotchLightsSupport.showsRestingOutline()
+        viewModel.restingOutlineActive = resting
+        if viewModel.state == .idle {
+            viewModel.palette = theme.palette
+            viewModel.isVisible = resting || viewModel.levelKind != nil
+            viewModel.isAnimating = viewModel.isVisible
+        } else if viewModel.state == .running && theme != .adaptive {
+            viewModel.palette = theme.palette
         }
         repositionPanel()
     }
@@ -73,9 +106,10 @@ final class NotchHaloController {
         lastFullscreenHidden = fullscreenHidden
         lastScreen = screen
 
-        viewModel.notchSize = closedSize
-        viewModel.floatingIsland = geometry.floats
-        viewModel.topInset = geometry.floats ? 12 : 0
+        if lastIslandScreenRect == nil || attachedHost == nil {
+            lastIslandScreenRect = geometry.frame(for: closedSize)
+            lastFloatingGap = geometry.floatingGap
+        }
         repositionPanel()
     }
 
@@ -85,7 +119,9 @@ final class NotchHaloController {
             return
         }
         if let active = live.first {
-            let palette = Self.palette(from: active.provider.tint, fallback: .running)
+            let palette = viewModel.outlineTheme == .adaptive
+                ? Self.palette(from: active.provider.tint, fallback: .running)
+                : viewModel.outlineTheme.palette
             if viewModel.state != .running || viewModel.palette != palette || viewModel.autoFadeDeadline != nil {
                 viewModel.beginOrTransition(to: .running, palette: palette, holdDuration: nil)
                 repositionPanel()
@@ -119,10 +155,11 @@ final class NotchHaloController {
             if viewModel.state == .music { viewModel.deactivate() }
             return
         }
-        // Agent runs take visual precedence over background music playback aura.
         if viewModel.state == .running && viewModel.autoFadeDeadline == nil { return }
         if playing {
-            let palette = tint.map { NotchHaloPalette.matching(r: $0.red, g: $0.green, b: $0.blue) } ?? .running
+            let palette: NotchHaloPalette = viewModel.outlineTheme == .adaptive
+                ? (tint.map { NotchHaloPalette.matching(r: $0.red, g: $0.green, b: $0.blue) } ?? .running)
+                : viewModel.outlineTheme.palette
             if viewModel.state != .music || viewModel.palette != palette {
                 viewModel.beginOrTransition(to: .music, palette: palette, holdDuration: nil)
                 repositionPanel()
@@ -134,28 +171,36 @@ final class NotchHaloController {
 
     func triggerCopySweep() {
         guard NotchLightsSupport.isEnabled(), NotchSupport.isEnabled(), NotchLightsSupport.tracksCopy() else { return }
-        viewModel.triggerCopySweep()
+        viewModel.triggerCopySweep(palette: viewModel.outlineTheme.palette)
         repositionPanel()
     }
 
     func triggerNotice(_ notice: NotchNotice) {
-        guard NotchLightsSupport.isEnabled(), NotchSupport.isEnabled(), NotchLightsSupport.tracksNotices() else { return }
+        guard NotchLightsSupport.isEnabled(), NotchSupport.isEnabled() else { return }
+
+        if let kind = Self.levelBarKind(for: notice.event), NotchLightsSupport.tracksLevelBars() {
+            let level = notice.level ?? 0
+            let muted = kind == .volume && level <= 0.001
+            viewModel.triggerLevelHUD(kind: kind, level: level, muted: muted, holdDuration: max(1.4, notice.event.duration + 0.35))
+            repositionPanel()
+            return
+        }
+
+        guard NotchLightsSupport.tracksNotices() else { return }
         let palette: NotchHaloPalette = {
             if let agent = notice.agent {
-                return Self.palette(from: agent.tint, fallback: .running)
+                return Self.palette(from: agent.tint, fallback: viewModel.outlineTheme.palette)
             }
             switch notice.event {
-            case .battery:
-                return .warning
-            case .timer, .watch:
+            case .battery, .timer, .watch:
                 return .warning
             case .track:
-                if let tint = NotchMusicService.shared.artworkTint {
+                if viewModel.outlineTheme == .adaptive, let tint = NotchMusicService.shared.artworkTint {
                     return .matching(r: tint.red, g: tint.green, b: tint.blue)
                 }
-                return .running
+                return viewModel.outlineTheme.palette
             default:
-                return .running
+                return viewModel.outlineTheme.palette
             }
         }()
         let hold = max(1.2, notice.event.duration)
@@ -172,8 +217,8 @@ final class NotchHaloController {
     func previewHalo() {
         syncWithPreferences()
         ensureFallbackLayout()
-        viewModel.beginOrTransition(to: .running, palette: .running, holdDuration: 3.2)
-        viewModel.triggerContourPulse(palette: .running, holdDuration: 3.2)
+        viewModel.beginOrTransition(to: .running, palette: viewModel.outlineTheme.palette, holdDuration: 3.2)
+        viewModel.triggerContourPulse(palette: viewModel.outlineTheme.palette, holdDuration: 3.2)
         repositionPanel(forceVisible: true)
     }
 
@@ -183,7 +228,7 @@ final class NotchHaloController {
         guard let screen = lastScreen ?? NSScreen.main,
               let geometry = lastGeometry else { return }
         edgeWave.trigger(
-            palette: .running,
+            palette: viewModel.outlineTheme.palette,
             on: screen,
             geometry: geometry,
             closedSize: lastClosedSize,
@@ -192,8 +237,16 @@ final class NotchHaloController {
         )
     }
 
+    func previewLevelBar(_ kind: NotchLevelBarKind) {
+        syncWithPreferences()
+        ensureFallbackLayout()
+        viewModel.triggerLevelHUD(kind: kind, level: kind == .volume ? 0.68 : 0.75, muted: false, holdDuration: 2.2)
+        repositionPanel(forceVisible: true)
+    }
+
     func stop() {
         edgeWave.stop()
+        viewModel.restingOutlineActive = false
         viewModel.deactivate()
         panel?.orderOut(nil)
     }
@@ -232,34 +285,54 @@ final class NotchHaloController {
             )
             lastGeometry = geom
             lastScreen = screen
-            lastClosedSize = CGSize(width: geom.cameraWidth, height: geom.stripHeight)
-            viewModel.notchSize = lastClosedSize
-            viewModel.floatingIsland = geom.floats
-            viewModel.topInset = geom.floats ? 12 : 0
+            lastClosedSize = geom.restingSize(showsContent: false)
+            lastIslandScreenRect = geom.frame(for: lastClosedSize)
+            lastFloatingGap = geom.floatingGap
         }
     }
 
     private func repositionPanel(forceVisible: Bool = false) {
-        guard let geometry = lastGeometry else { return }
-        let frame = NotchLightsSupport.overlayFrame(
-            geometry: geometry,
-            closedSize: lastClosedSize,
+        let islandScreenRect: CGRect
+        let gap: CGFloat?
+        if let rect = lastIslandScreenRect {
+            islandScreenRect = rect
+            gap = lastFloatingGap
+        } else if let geometry = lastGeometry {
+            islandScreenRect = geometry.frame(for: lastClosedSize)
+            gap = geometry.floatingGap
+        } else {
+            return
+        }
+
+        let scale = (lastScreen ?? NSScreen.main)?.backingScaleFactor ?? 2.0
+        let layout = NotchLightsSupport.overlayLayout(
+            islandScreenRect: islandScreenRect,
+            floatingGap: gap,
             armRun: viewModel.armWidth.points,
-            thicknessScale: viewModel.thicknessScale
+            thicknessScale: viewModel.thicknessScale,
+            screenScale: scale
         )
-        let pan = ensurePanel(frame: frame)
-        pan.level = NotchPanel.normalLevel
-        pan.setFrame(frame, display: false)
-        hostingView?.frame = CGRect(origin: .zero, size: frame.size)
+
+        let pan = ensurePanel(frame: layout.overlayScreenRect)
+        pan.setFrame(layout.overlayScreenRect, display: false)
+        hostingView?.frame = CGRect(origin: .zero, size: layout.overlayScreenRect.size)
+        viewModel.islandRect = layout.islandRect
+        viewModel.floatingGap = layout.floatingGap
 
         let shouldShow = (forceVisible || (lastVisible && !lastFullscreenHidden))
             && NotchLightsSupport.isEnabled()
             && viewModel.isVisible
+
+        if let host = attachedHost {
+            host.orderBackgroundOverlay(pan, visible: shouldShow)
+            return
+        }
+
         guard shouldShow else {
             pan.orderOut(nil)
             return
         }
-
+        pan.level = NotchPanel.normalLevel
         if let notchWin = lastNotchWindowNumber, notchWin > 0 {
             pan.order(.below, relativeTo: notchWin)
         } else {
@@ -281,15 +354,25 @@ final class NotchHaloController {
         pan.backgroundColor = .clear
         pan.hasShadow = false
         pan.level = NotchPanel.normalLevel
-        pan.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        pan.collectionBehavior = NotchPanel.overlayCollectionBehavior
         let hosting = NSHostingView(rootView: NotchHaloView(model: viewModel))
         hosting.frame = CGRect(origin: .zero, size: frame.size)
         hosting.wantsLayer = true
         hosting.layer?.backgroundColor = NSColor.clear.cgColor
         pan.contentView = hosting
+        attachedHost?.attachBackgroundOverlay(pan)
         self.panel = pan
         self.hostingView = hosting
         return pan
+    }
+
+    private static func levelBarKind(for event: NotchEvent) -> NotchLevelBarKind? {
+        switch event {
+        case .volume: return .volume
+        case .brightness: return .brightness
+        case .keyboardLight: return .keyboardLight
+        default: return nil
+        }
     }
 
     private static func palette(from color: Color, fallback: NotchHaloPalette) -> NotchHaloPalette {

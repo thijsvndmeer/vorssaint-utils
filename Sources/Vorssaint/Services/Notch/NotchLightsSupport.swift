@@ -55,6 +55,103 @@ enum NotchHaloState: String, Equatable {
     case idle, running, success, warning, error, stalled, music, copy
 }
 
+enum NotchOutlineTheme: String, CaseIterable, Identifiable, Equatable {
+    case adaptive, cyan, prism, aurora, sunlight, emerald, crimson, monochrome
+
+    var id: String { rawValue }
+
+    var palette: NotchHaloPalette {
+        switch self {
+        case .adaptive, .cyan:
+            return .running
+        case .prism:
+            return NotchHaloPalette(
+                primary: NotchHaloRGB(r: 0.45, g: 0.78, b: 1.00),
+                secondary: NotchHaloRGB(r: 0.78, g: 0.42, b: 1.00),
+                core: NotchHaloRGB(r: 0.90, g: 0.94, b: 1.00),
+                rim: NotchHaloRGB(r: 1.00, g: 0.48, b: 0.72)
+            )
+        case .aurora:
+            return NotchHaloPalette(
+                primary: NotchHaloRGB(r: 0.18, g: 0.92, b: 0.78),
+                secondary: NotchHaloRGB(r: 0.36, g: 0.56, b: 1.00),
+                core: NotchHaloRGB(r: 0.80, g: 1.00, b: 0.94),
+                rim: NotchHaloRGB(r: 0.24, g: 0.88, b: 0.62)
+            )
+        case .sunlight:
+            return NotchHaloPalette(
+                primary: NotchHaloRGB(r: 1.00, g: 0.88, b: 0.48),
+                secondary: NotchHaloRGB(r: 1.00, g: 0.37, b: 0.09),
+                core: NotchHaloRGB(r: 1.00, g: 0.97, b: 0.82),
+                rim: NotchHaloRGB(r: 1.00, g: 0.62, b: 0.18)
+            )
+        case .emerald:
+            return .success
+        case .crimson:
+            return NotchHaloPalette(
+                primary: NotchHaloRGB(r: 0.94, g: 0.37, b: 0.48),
+                secondary: NotchHaloRGB(r: 0.64, g: 0.13, b: 0.40),
+                core: NotchHaloRGB(r: 1.00, g: 0.80, b: 0.84),
+                rim: NotchHaloRGB(r: 0.96, g: 0.28, b: 0.42)
+            )
+        case .monochrome:
+            return NotchHaloPalette(
+                primary: NotchHaloRGB(r: 0.96, g: 0.97, b: 1.00),
+                secondary: NotchHaloRGB(r: 0.72, g: 0.78, b: 0.86),
+                core: NotchHaloRGB(r: 1.00, g: 1.00, b: 1.00),
+                rim: NotchHaloRGB(r: 0.84, g: 0.88, b: 0.94)
+            )
+        }
+    }
+}
+
+enum NotchLevelBarKind: Equatable {
+    case volume, brightness, keyboardLight
+}
+
+struct NotchLevelPrismPalette: Equatable {
+    let lead: NotchHaloRGB
+    let trail: NotchHaloRGB
+    let core: NotchHaloRGB
+
+    /// Glance ShortcutPrism.volume (cyan to electric indigo)
+    static let volume = NotchLevelPrismPalette(
+        lead: NotchHaloRGB(r: 0.10, g: 0.91, b: 1.00),
+        trail: NotchHaloRGB(r: 0.22, g: 0.25, b: 1.00),
+        core: NotchHaloRGB(r: 0.85, g: 0.98, b: 1.00)
+    )
+
+    /// Glance ShortcutPrism.sunlight (gold to solar orange)
+    static let sunlight = NotchLevelPrismPalette(
+        lead: NotchHaloRGB(r: 1.00, g: 0.88, b: 0.48),
+        trail: NotchHaloRGB(r: 1.00, g: 0.37, b: 0.09),
+        core: NotchHaloRGB(r: 1.00, g: 0.97, b: 0.82)
+    )
+
+    /// Glance ShortcutPrism.silence (rose-crimson mute glow)
+    static let silence = NotchLevelPrismPalette(
+        lead: NotchHaloRGB(r: 0.94, g: 0.37, b: 0.48),
+        trail: NotchHaloRGB(r: 0.64, g: 0.13, b: 0.40),
+        core: NotchHaloRGB(r: 1.00, g: 0.80, b: 0.84)
+    )
+
+    static func palette(for kind: NotchLevelBarKind, muted: Bool) -> NotchLevelPrismPalette {
+        if muted && kind == .volume { return .silence }
+        switch kind {
+        case .volume: return .volume
+        case .brightness, .keyboardLight: return .sunlight
+        }
+    }
+}
+
+struct NotchHaloOverlayLayout: Equatable {
+    let overlayScreenRect: CGRect
+    let islandRect: CGRect
+    let floatingGap: CGFloat?
+    let shoulder: CGFloat
+    let cornerRadius: CGFloat
+}
+
 struct NotchHaloRGB: Equatable {
     var r: Double
     var g: Double
@@ -260,6 +357,22 @@ enum NotchLightsSupport {
         defaults.object(forKey: DefaultsKey.notchLightsNotices) as? Bool ?? true
     }
 
+    static func outlineTheme(in defaults: UserDefaults = .standard) -> NotchOutlineTheme {
+        NotchOutlineTheme(rawValue: defaults.string(forKey: DefaultsKey.notchOutlineTheme) ?? "") ?? .adaptive
+    }
+
+    static func restingOutline(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: DefaultsKey.notchLightsRestingOutline) as? Bool ?? false
+    }
+
+    static func tracksLevelBars(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: DefaultsKey.notchLightsLevelBars) as? Bool ?? true
+    }
+
+    static func showsRestingOutline(in defaults: UserDefaults = .standard) -> Bool {
+        isEnabled(in: defaults) && (restingOutline(in: defaults) || defaults.bool(forKey: DefaultsKey.notchOutlineEnabled))
+    }
+
     static func fract(_ x: Double) -> Double {
         x - floor(x)
     }
@@ -305,16 +418,55 @@ enum NotchLightsSupport {
         }
     }
 
-    static func overlayFrame(geometry: NotchGeometry, closedSize: CGSize, armRun: CGFloat, thicknessScale: Double) -> CGRect {
+    static func overlayLayout(islandScreenRect: CGRect, floatingGap: CGFloat?, armRun: CGFloat,
+                              thicknessScale: Double, screenScale: CGFloat = 2.0) -> NotchHaloOverlayLayout {
         let clampedArm = min(maxArmRun, max(40.0, armRun))
         let scale = clampedThickness(thicknessScale)
-        let width = closedSize.width + clampedArm * 2.0 + 48.0
-        let bloomDown = CGFloat(92.0 * scale)
-        let topDrop = geometry.floats ? max(0, geometry.floatingDrop - 12.0) : 0
-        let height = closedSize.height + bloomDown + (geometry.floats ? 24.0 : 0)
-        let x = geometry.screen.midX + geometry.surfaceShift - width / 2.0
-        let y = geometry.screen.maxY - topDrop - height
-        return CGRect(x: x.rounded(), y: y.rounded(), width: width.rounded(), height: height.rounded())
+        let backingScale = max(1.0, screenScale)
+        func snap(_ value: CGFloat) -> CGFloat { (value * backingScale).rounded() / backingScale }
+
+        let snappedIsland = CGRect(
+            x: snap(islandScreenRect.minX),
+            y: snap(islandScreenRect.minY),
+            width: snap(max(40, islandScreenRect.width)),
+            height: snap(max(16, islandScreenRect.height))
+        )
+        let sidePad = snap(clampedArm + 48.0)
+        let bottomBloom = snap(CGFloat(92.0 * scale))
+        let topPad: CGFloat = floatingGap != nil ? snap(CGFloat(36.0 * scale)) : 0
+
+        let overlayScreenRect = CGRect(
+            x: snap(snappedIsland.minX - sidePad),
+            y: snap(snappedIsland.minY - bottomBloom),
+            width: snap(snappedIsland.width + sidePad * 2.0),
+            height: snap(snappedIsland.height + bottomBloom + topPad)
+        )
+
+        // Convert AppKit bottom-up screen rect to SwiftUI top-down local rect inside overlayScreenRect.
+        let localOriginY = snap(overlayScreenRect.maxY - snappedIsland.maxY)
+        let localIslandRect = CGRect(
+            x: snap(snappedIsland.minX - overlayScreenRect.minX),
+            y: localOriginY,
+            width: snappedIsland.width,
+            height: snappedIsland.height
+        )
+
+        return NotchHaloOverlayLayout(
+            overlayScreenRect: overlayScreenRect,
+            islandRect: localIslandRect,
+            floatingGap: floatingGap,
+            shoulder: NotchLayout.shoulder(height: snappedIsland.height),
+            cornerRadius: NotchLayout.surfaceRadius(height: snappedIsland.height)
+        )
+    }
+
+    static func overlayFrame(geometry: NotchGeometry, closedSize: CGSize, armRun: CGFloat, thicknessScale: Double) -> CGRect {
+        overlayLayout(
+            islandScreenRect: geometry.frame(for: closedSize),
+            floatingGap: geometry.floatingGap,
+            armRun: armRun,
+            thicknessScale: thicknessScale
+        ).overlayScreenRect
     }
 }
 

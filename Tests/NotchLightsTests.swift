@@ -37,7 +37,12 @@ enum NotchLightsTests {
             DefaultsKey.notchLightsNotices,
             DefaultsKey.notchOutlineTheme,
             DefaultsKey.notchLightsRestingOutline,
-            DefaultsKey.notchLightsLevelBars
+            DefaultsKey.notchLightsLevelBars,
+            DefaultsKey.notchLightsFullWidthLevelBars,
+            DefaultsKey.notchLightsFullWidthAgents,
+            DefaultsKey.notchLightsFullWidthMusic,
+            DefaultsKey.notchLightsFullWidthModifiers,
+            DefaultsKey.notchLightsFullWidthResting
         ]
         suite.expect(keys.allSatisfy { Defaults.registeredDefaults[$0] != nil },
                      "all island light defaults are registered")
@@ -117,6 +122,37 @@ enum NotchLightsTests {
                         && exactCapsule.islandRect.minY > 0
                         && exactCapsule.islandRect.size == capSize,
                      "floating capsule halo reserves top bloom room and preserves capsule gap")
+
+        let fullCentered = NotchLightsSupport.overlayLayout(
+            islandScreenRect: notched.frame(for: closedSize),
+            floatingGap: notched.floatingGap,
+            armRun: 130,
+            thicknessScale: 1.0,
+            screenFrame: screen,
+            fullWidth: true
+        )
+        suite.expect(fullCentered.overlayScreenRect.minX == screen.minX
+                        && fullCentered.overlayScreenRect.width == screen.width
+                        && fullCentered.islandRect.minY == 0
+                        && fullCentered.islandRect.size == closedSize
+                        && abs(fullCentered.islandRect.midX - screen.width / 2) <= 0.5,
+                     "full-width overlay covers full screen width while keeping centered island local rect")
+
+        let shiftedScreen = CGRect(x: 100, y: 0, width: 1728, height: 1117)
+        let shiftedIsland = CGRect(x: 780, y: 1079, width: 280, height: 38)
+        let fullShifted = NotchLightsSupport.overlayLayout(
+            islandScreenRect: shiftedIsland,
+            floatingGap: nil,
+            armRun: 130,
+            thicknessScale: 1.0,
+            screenFrame: shiftedScreen,
+            fullWidth: true
+        )
+        suite.expect(fullShifted.overlayScreenRect.minX == shiftedScreen.minX
+                        && fullShifted.overlayScreenRect.width == shiftedScreen.width
+                        && abs(fullShifted.islandRect.minX - (shiftedIsland.minX - shiftedScreen.minX)) <= 0.5
+                        && fullShifted.islandRect.size == shiftedIsland.size,
+                     "full-width overlay maps shifted/asymmetric island origin inside screen-wide panel")
     }
 
     private static func uniformMemoryLayout(_ suite: TestSuite) {
@@ -223,86 +259,97 @@ enum NotchLightsTests {
     }
 
     private static func contourLineOwnership(_ suite: TestSuite) {
-        // Priority order: level > modifier > fullHalo > music > resting
-        suite.expect(NotchContourLineState.resolveOwner(levelKind: .volume, levelMuted: false, modifier: .shift, musicActive: true, restingActive: true, fullHaloActive: true) == .level(kind: .volume, muted: false),
-                     "level HUD takes top priority over modifier, full halo, music, and resting")
-        suite.expect(NotchContourLineState.resolveOwner(levelKind: nil, levelMuted: false, modifier: .capsLock, musicActive: true, restingActive: true, fullHaloActive: true) == .modifier(.capsLock),
-                     "modifier indicator takes priority over full halo, music, and resting")
-        suite.expect(NotchContourLineState.resolveOwner(levelKind: nil, levelMuted: false, modifier: nil, musicActive: true, restingActive: true, fullHaloActive: true) == nil,
-                     "full halo suppresses ambient music and resting contour owners")
-        suite.expect(NotchContourLineState.resolveOwner(levelKind: nil, levelMuted: false, modifier: nil, musicActive: true, restingActive: true, fullHaloActive: false) == .music,
-                     "music owns contour line when no higher priority signal or full halo is active")
-        suite.expect(NotchContourLineState.resolveOwner(levelKind: nil, levelMuted: false, modifier: nil, musicActive: false, restingActive: true, fullHaloActive: false) == .resting,
+        // Priority order: level > modifier > fullHalo > agent > music > resting
+        suite.expect(NotchContourLineState.resolveOwner(levelKind: .volume, levelMuted: false, modifier: .shift, agentActive: true, musicActive: true, restingActive: true, fullHaloActive: true) == .level(kind: .volume, muted: false),
+                     "level HUD takes top priority over modifier, full halo, agent, music, and resting")
+        suite.expect(NotchContourLineState.resolveOwner(levelKind: nil, levelMuted: false, modifier: .capsLock, agentActive: true, musicActive: true, restingActive: true, fullHaloActive: true) == .modifier(.capsLock),
+                     "modifier indicator takes priority over full halo, agent, music, and resting")
+        suite.expect(NotchContourLineState.resolveOwner(levelKind: nil, levelMuted: false, modifier: nil, agentActive: true, musicActive: true, restingActive: true, fullHaloActive: true) == nil,
+                     "full halo suppresses ambient agent, music, and resting contour owners")
+        suite.expect(NotchContourLineState.resolveOwner(levelKind: nil, levelMuted: false, modifier: nil, agentActive: true, musicActive: true, restingActive: true, fullHaloActive: false) == .agent,
+                     "agent owns contour line above music and resting outline")
+        suite.expect(NotchContourLineState.resolveOwner(levelKind: nil, levelMuted: false, modifier: nil, agentActive: false, musicActive: true, restingActive: true, fullHaloActive: false) == .music,
+                     "music owns contour line when no higher priority signal or agent is active")
+        suite.expect(NotchContourLineState.resolveOwner(levelKind: nil, levelMuted: false, modifier: nil, agentActive: false, musicActive: false, restingActive: true, fullHaloActive: false) == .resting,
                      "resting outline owns contour line when nothing else is active")
 
-        // Transition scenarios
+        let agentP = NotchLevelPrismPalette(halo: .running)
         let musicA = NotchHaloPalette.matching(r: 0.90, g: 0.20, b: 0.35)
         let musicPA = NotchLevelPrismPalette(halo: musicA)
         let musicB = NotchHaloPalette.matching(r: 0.25, g: 0.85, b: 0.45)
         let musicPB = NotchLevelPrismPalette(halo: musicB)
         let shiftP = NotchModifierIndicator.shift.prismPalette
 
+        // Agent enters full-width, shifts to notch-only music cleanly (armSpan 1 -> 0)
         var state = NotchContourLineState()
-        state.update(owner: .music, palette: musicPA, liveLevel: 0, at: 10.0)
+        state.update(owner: .agent, palette: agentP, fullWidth: true, liveLevel: 0, at: 10.0)
         let sStart = state.sample(at: 10.0, liveLevel: 0)
         let sMidIn = state.sample(at: 10.10, liveLevel: 0)
-        let sMusicSettled = state.sample(at: 10.20, liveLevel: 0)
-        suite.expect(sStart.fillExtent == 1.0 && sStart.railOpacity == 0.0
+        let sAgentSettled = state.sample(at: 10.20, liveLevel: 0)
+        suite.expect(sStart.fillExtent == 1.0 && sStart.railOpacity == 0.0 && sStart.armSpan == 1.0
                         && sMidIn.opacity > 0.0 && sMidIn.opacity < 1.0
-                        && abs(sMusicSettled.opacity - 1.0) < 0.0001
-                        && sMusicSettled.palette == musicPA
-                        && sMusicSettled.fillExtent == 1.0
-                        && sMusicSettled.railOpacity == 0.0,
-                     "music enters from idle as a full contour line without rail over 0.20s")
+                        && abs(sAgentSettled.opacity - 1.0) < 0.0001
+                        && sAgentSettled.palette == agentP
+                        && sAgentSettled.armSpan == 1.0,
+                     "agent enters as full-width contour line over 0.20s")
 
-        // Shift takes over smoothly without opacity dip
-        state.update(owner: .modifier(.shift), palette: shiftP, liveLevel: 0, at: 10.50)
-        let sShiftMid = state.sample(at: 10.61, liveLevel: 0)
-        let sShiftDone = state.sample(at: 10.73, liveLevel: 0)
+        // Live width toggle on same owner animates armSpan 1 -> 0 smoothly
+        state.update(owner: .agent, palette: agentP, fullWidth: false, liveLevel: 0, at: 10.30)
+        let sWidthMid = state.sample(at: 10.42, liveLevel: 0)
+        let sWidthDone = state.sample(at: 10.55, liveLevel: 0)
+        suite.expect(sWidthMid.armSpan > 0.0 && sWidthMid.armSpan < 1.0 && sWidthDone.armSpan == 0.0,
+                     "toggling full-width setting animates armSpan smoothly without restarting opacity")
+
+        // Shift takes over full-width while active (armSpan 0 -> 1)
+        state.update(owner: .modifier(.shift), palette: shiftP, fullWidth: true, liveLevel: 0, at: 10.60)
+        let sShiftMid = state.sample(at: 10.71, liveLevel: 0)
+        let sShiftDone = state.sample(at: 10.83, liveLevel: 0)
         suite.expect(abs(sShiftMid.opacity - 1.0) < 0.0001
                         && sShiftMid.fillExtent == 1.0
                         && sShiftMid.railOpacity == 0.0
-                        && sShiftMid.palette.lead.r < musicPA.lead.r && sShiftMid.palette.lead.r > shiftP.lead.r
-                        && sShiftDone.palette == shiftP,
-                     "modifier cleanly overwrites active music line color with constant opacity")
+                        && sShiftMid.armSpan > 0.0 && sShiftMid.armSpan < 1.0
+                        && sShiftMid.palette.lead.r > agentP.lead.r
+                        && sShiftDone.palette == shiftP
+                        && sShiftDone.armSpan == 1.0,
+                     "modifier cleanly overwrites agent line color and smoothly extends to full width")
 
-        // Release Shift -> returns to music color cleanly
-        state.update(owner: .music, palette: musicPA, liveLevel: 0, at: 11.00)
+        // Music active full-width -> Volume (fullWidth: true) -> Music -> Song change -> Fade out
+        state.update(owner: .music, palette: musicPA, fullWidth: true, liveLevel: 0, at: 11.00)
         let sReturnMusic = state.sample(at: 11.23, liveLevel: 0)
-        suite.expect(abs(sReturnMusic.opacity - 1.0) < 0.0001 && sReturnMusic.palette == musicPA,
-                     "releasing modifier returns contour line smoothly to music color")
+        suite.expect(abs(sReturnMusic.opacity - 1.0) < 0.0001 && sReturnMusic.palette == musicPA && sReturnMusic.armSpan == 1.0,
+                     "music takes over from modifier at full width cleanly")
 
-        // Volume takes over while Music plays: morphs extent & fades in rail cleanly
-        state.update(owner: .level(kind: .volume, muted: false), palette: .volume, liveLevel: 0.45, at: 12.00)
+        state.update(owner: .level(kind: .volume, muted: false), palette: .volume, fullWidth: false, liveLevel: 0.45, at: 12.00)
         let sVolMid = state.sample(at: 12.08, liveLevel: 0.45)
         let sVolDone = state.sample(at: 12.17, liveLevel: 0.45)
         suite.expect(abs(sVolMid.opacity - 1.0) < 0.0001
                         && sVolMid.fillExtent > 0.45 && sVolMid.fillExtent < 1.0
                         && sVolMid.railOpacity > 0.0 && sVolMid.railOpacity < 1.0
+                        && sVolMid.armSpan > 0.0 && sVolMid.armSpan < 1.0
                         && abs(sVolDone.fillExtent - 0.45) < 0.0001
                         && abs(sVolDone.railOpacity - 1.0) < 0.0001
+                        && sVolDone.armSpan == 0.0
                         && sVolDone.palette == .volume,
-                     "volume overwrites music contour line, morphs trim to liveLevel, and brings in dim rail")
+                     "notch-only volume overwrites full-width music, morphs trim & collapses armSpan smoothly")
 
-        // Live spring update after transition settled tracks 1:1
         let sVolTrack = state.sample(at: 12.40, liveLevel: 0.72)
         suite.expect(abs(sVolTrack.fillExtent - 0.72) < 0.0001,
                      "settled level owner tracks live 120Hz spring extent directly")
 
-        // Expire Volume back to Music -> expands back to full 1.0 and removes rail
-        state.update(owner: .music, palette: musicPA, liveLevel: 0.72, at: 13.00)
+        state.update(owner: .music, palette: musicPA, fullWidth: true, liveLevel: 0.72, at: 13.00)
         let sBackMid = state.sample(at: 13.12, liveLevel: 0.72)
         let sBackDone = state.sample(at: 13.33, liveLevel: 0.72)
         suite.expect(abs(sBackMid.opacity - 1.0) < 0.0001
                         && sBackMid.fillExtent > 0.72 && sBackMid.fillExtent < 1.0
                         && sBackMid.railOpacity > 0.0 && sBackMid.railOpacity < 1.0
+                        && sBackMid.armSpan > 0.0 && sBackMid.armSpan < 1.0
                         && abs(sBackDone.fillExtent - 1.0) < 0.0001
                         && abs(sBackDone.railOpacity) < 0.0001
+                        && sBackDone.armSpan == 1.0
                         && sBackDone.palette == musicPA,
-                     "expiring level bar expands back to full music line cleanly")
+                     "expiring level bar expands back to full-width music line cleanly")
 
-        // Song-to-song tint shift blends smoothly at constant opacity
-        state.update(owner: .music, palette: musicPB, liveLevel: 0, at: 14.00)
+        state.update(owner: .music, palette: musicPB, fullWidth: true, liveLevel: 0, at: 14.00)
         let sSongMid = state.sample(at: 14.16, liveLevel: 0)
         let sSongDone = state.sample(at: 14.33, liveLevel: 0)
         suite.expect(abs(sSongMid.opacity - 1.0) < 0.0001
@@ -310,30 +357,32 @@ enum NotchLightsTests {
                         && sSongDone.palette == musicPB,
                      "song change smoothly morphs contour palette without restarting opacity")
 
-        // Pausing music when idle fades opacity cleanly to zero
-        state.update(owner: nil, palette: nil, liveLevel: 0, at: 15.00)
+        // Pausing full-width music preserves armSpan == 1.0 while fading out
+        state.update(owner: nil, palette: nil, fullWidth: false, liveLevel: 0, at: 15.00)
         let sFadeMid = state.sample(at: 15.18, liveLevel: 0)
         let sFadeDone = state.sample(at: 15.37, liveLevel: 0)
-        suite.expect(sFadeMid.opacity > 0.0 && sFadeMid.opacity < 1.0 && sFadeMid.isActive
+        suite.expect(sFadeMid.opacity > 0.0 && sFadeMid.opacity < 1.0 && sFadeMid.isActive && sFadeMid.armSpan == 1.0
                         && sFadeDone.opacity == 0.0 && !sFadeDone.isActive,
-                     "pausing music without resting outline fades contour line cleanly to inactive")
+                     "fading out full-width line preserves armSpan while opacity drops to zero")
 
         // Idle level bar pausing holds its fillExtent while fading out
         var idleLevelState = NotchContourLineState()
-        idleLevelState.update(owner: .level(kind: .brightness, muted: false), palette: .sunlight, liveLevel: 0.35, at: 20.0, reduceMotion: true)
-        idleLevelState.update(owner: nil, palette: nil, liveLevel: 0.35, at: 21.0)
+        idleLevelState.update(owner: .level(kind: .brightness, muted: false), palette: .sunlight, fullWidth: true, liveLevel: 0.35, at: 20.0, reduceMotion: true)
+        idleLevelState.update(owner: nil, palette: nil, fullWidth: false, liveLevel: 0.35, at: 21.0)
         let sIdleLevelFade = idleLevelState.sample(at: 21.18, liveLevel: 0.35)
-        suite.expect(abs(sIdleLevelFade.fillExtent - 0.35) < 0.0001 && sIdleLevelFade.opacity > 0 && sIdleLevelFade.opacity < 1.0,
-                     "expiring level bar when idle preserves its trim extent while fading out")
+        suite.expect(abs(sIdleLevelFade.fillExtent - 0.35) < 0.0001
+                        && sIdleLevelFade.armSpan == 1.0
+                        && sIdleLevelFade.opacity > 0 && sIdleLevelFade.opacity < 1.0,
+                     "expiring level bar when idle preserves trim extent and armSpan while fading out")
 
-        // Reduce Motion snaps palette, opacity, and fillExtent immediately
+        // Reduce Motion snaps palette, opacity, fillExtent, and armSpan immediately
         var reduceState = NotchContourLineState()
-        reduceState.update(owner: .music, palette: musicPA, liveLevel: 0, at: 30.0, reduceMotion: true)
-        let rMusic = reduceState.sample(at: 30.0, liveLevel: 0, reduceMotion: true)
-        reduceState.update(owner: .level(kind: .brightness, muted: false), palette: .sunlight, liveLevel: 0.62, at: 30.5, reduceMotion: true)
+        reduceState.update(owner: .agent, palette: agentP, fullWidth: true, liveLevel: 0, at: 30.0, reduceMotion: true)
+        let rAgent = reduceState.sample(at: 30.0, liveLevel: 0, reduceMotion: true)
+        reduceState.update(owner: .level(kind: .brightness, muted: false), palette: .sunlight, fullWidth: false, liveLevel: 0.62, at: 30.5, reduceMotion: true)
         let rBright = reduceState.sample(at: 30.5, liveLevel: 0.62, reduceMotion: true)
-        suite.expect(rMusic.opacity == 1.0 && rMusic.palette == musicPA
-                        && rBright.opacity == 1.0 && abs(rBright.fillExtent - 0.62) < 0.0001 && rBright.palette == .sunlight,
-                     "Reduce Motion snaps contour transitions immediately")
+        suite.expect(rAgent.opacity == 1.0 && rAgent.palette == agentP && rAgent.armSpan == 1.0
+                        && rBright.opacity == 1.0 && abs(rBright.fillExtent - 0.62) < 0.0001 && rBright.armSpan == 0.0 && rBright.palette == .sunlight,
+                     "Reduce Motion snaps contour transitions including armSpan immediately")
     }
 }

@@ -30,8 +30,16 @@ final class NotchHaloViewModel: ObservableObject {
     @Published var levelMuted: Bool = false
     @Published var levelDirection: Double = 1
     @Published var modifierAccent: NotchModifierIndicator? = nil
+    @Published var agentActive: Bool = false
+    @Published var agentPalette: NotchHaloPalette = .running
     @Published var musicActive: Bool = false
     @Published var musicPalette: NotchHaloPalette = .running
+
+    var fullWidthLevelBars: Bool = true
+    var fullWidthAgents: Bool = true
+    var fullWidthMusic: Bool = true
+    var fullWidthModifiers: Bool = true
+    var fullWidthResting: Bool = true
 
     @Published var isVisible: Bool = false
     @Published var isAnimating: Bool = false
@@ -45,28 +53,57 @@ final class NotchHaloViewModel: ObservableObject {
     var levelSpring = NotchFluidLevelSpring()
     var levelUpdatedAt: Date = .distantPast
     var levelHoldUntil: Date = .distantPast
+    var agentAlertPalette: NotchHaloPalette? = nil
+    var agentAlertHoldUntil: Date = .distantPast
     var autoFadeDeadline: Date?
     var contourState = NotchContourLineState()
+
+    func isFullWidth(for owner: NotchContourLineOwner) -> Bool {
+        switch owner {
+        case .level: return fullWidthLevelBars
+        case .modifier: return fullWidthModifiers
+        case .agent: return fullWidthAgents
+        case .music: return fullWidthMusic
+        case .resting: return fullWidthResting
+        }
+    }
 
     func refreshContourTarget(at now: Date = Date()) {
         let t = now.timeIntervalSinceReferenceDate
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let levelValid = levelKind != nil && levelHoldUntil > now
         let activeLevelKind = levelValid ? levelKind : nil
+        let agentAlertActive = agentAlertPalette != nil && agentAlertHoldUntil > now
+        let anyAgentActive = agentAlertActive || agentActive
+        let activeAgentPalette = (agentAlertActive ? agentAlertPalette : nil) ?? agentPalette
         let fullHaloActive = state != .idle && (autoFadeDeadline.map { $0 > now } ?? true)
         let owner = NotchContourLineState.resolveOwner(
             levelKind: activeLevelKind,
             levelMuted: levelMuted,
             modifier: modifierAccent,
+            agentActive: anyAgentActive,
             musicActive: musicActive,
             restingActive: restingOutlineActive,
             fullHaloActive: fullHaloActive
         )
         let palette = owner.map {
-            NotchContourLineState.palette(for: $0, musicPalette: musicPalette, restingPalette: outlineTheme.palette)
+            NotchContourLineState.palette(
+                for: $0,
+                agentPalette: activeAgentPalette,
+                musicPalette: musicPalette,
+                restingPalette: outlineTheme.palette
+            )
         }
+        let fullWidth = owner.map { isFullWidth(for: $0) } ?? false
         let liveLevel = levelSpring.sample(at: t, reduceMotion: reduceMotion).value
-        contourState.update(owner: owner, palette: palette, liveLevel: liveLevel, at: t, reduceMotion: reduceMotion)
+        contourState.update(
+            owner: owner,
+            palette: palette,
+            fullWidth: fullWidth,
+            liveLevel: liveLevel,
+            at: t,
+            reduceMotion: reduceMotion
+        )
         let activeSample = contourState.sample(at: t, liveLevel: liveLevel, reduceMotion: reduceMotion)
         if owner != nil || activeSample.isActive || fullHaloActive {
             isVisible = true
@@ -156,6 +193,22 @@ final class NotchHaloViewModel: ObservableObject {
         refreshContourTarget(at: now)
     }
 
+    func triggerAgentAlert(palette: NotchHaloPalette, holdDuration: TimeInterval) {
+        let now = Date()
+        agentAlertPalette = palette
+        agentAlertHoldUntil = now.addingTimeInterval(holdDuration)
+        refreshContourTarget(at: now)
+        isVisible = true
+        isAnimating = true
+    }
+
+    func expireAgentAlert(at now: Date = Date()) {
+        guard agentAlertPalette != nil else { return }
+        agentAlertPalette = nil
+        agentAlertHoldUntil = .distantPast
+        refreshContourTarget(at: now)
+    }
+
     func settleIfIdle(at now: Date = Date()) {
         if state != .idle, autoFadeDeadline.map({ $0 <= now }) == true {
             state = .idle
@@ -167,13 +220,18 @@ final class NotchHaloViewModel: ObservableObject {
             levelHoldUntil = .distantPast
             refreshContourTarget(at: now)
         }
+        if agentAlertPalette != nil && agentAlertHoldUntil <= now {
+            agentAlertPalette = nil
+            agentAlertHoldUntil = .distantPast
+            refreshContourTarget(at: now)
+        }
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let sampled = contourState.sample(at: now.timeIntervalSinceReferenceDate, liveLevel: levelValue, reduceMotion: reduceMotion)
         let copyDone = now.timeIntervalSince(copySweepStart) >= 0.52
         let pasteDone = now.timeIntervalSince(pastePulseStart) >= 0.48
         let pulseDone = now.timeIntervalSince(contourPulseStart) >= 0.85
         let ignitionDone = entryMode != .blast || now.timeIntervalSince(ignitionStart) >= 3.54
-        if state == .idle && levelKind == nil && contourState.targetOwner == nil && !sampled.isActive
+        if state == .idle && levelKind == nil && agentAlertPalette == nil && contourState.targetOwner == nil && !sampled.isActive
             && copyDone && pasteDone && pulseDone && ignitionDone {
             isVisible = false
             isAnimating = false
@@ -185,6 +243,9 @@ final class NotchHaloViewModel: ObservableObject {
         autoFadeDeadline = nil
         levelKind = nil
         levelHoldUntil = .distantPast
+        agentActive = false
+        agentAlertPalette = nil
+        agentAlertHoldUntil = .distantPast
         musicActive = false
         modifierAccent = nil
         restingOutlineActive = false
@@ -288,6 +349,9 @@ struct NotchHaloView: View {
             }
 
             if contourSample.isActive {
+                let livingBreath = (model.contourState.targetOwner == .music || model.contourState.targetOwner == .agent)
+                    && !reduceMotion
+                    && model.motion != .none
                 NotchContourLineOverlay(
                     islandRect: model.islandRect,
                     floatingGap: model.floatingGap,
@@ -295,10 +359,11 @@ struct NotchHaloView: View {
                     opacity: contourSample.opacity,
                     fillExtent: contourSample.fillExtent,
                     railOpacity: contourSample.railOpacity,
+                    armSpan: contourSample.armSpan,
                     velocity: levelActive ? sampledLevel.velocity : 0,
                     energy: (levelActive && !model.levelMuted) ? sampledLevel.energy : 0,
                     isMutedPulseActive: levelActive && model.levelKind == .volume && model.levelMuted,
-                    musicBreathing: model.contourState.targetOwner == .music && !reduceMotion && model.motion != .none,
+                    musicBreathing: livingBreath,
                     time: now.timeIntervalSinceReferenceDate,
                     thicknessScale: model.thicknessScale,
                     pulseElapsed: max(0, now.timeIntervalSince(model.levelUpdatedAt)),
@@ -456,8 +521,8 @@ struct NotchHaloView: View {
     }
 }
 
-/// Unified notch-hugging contour line (`armRun: 0`) shared by Audio, Brightness,
-/// Keyboard Backlight, Caps Lock / Shift modifiers, Music playback, and the resting outline.
+/// Unified notch-hugging / full-screen contour line shared by Audio, Brightness,
+/// Keyboard Backlight, Caps Lock / Shift modifiers, Agents, Music playback, and resting outline.
 struct NotchContourLineOverlay: View {
     let islandRect: CGRect
     let floatingGap: CGFloat?
@@ -465,6 +530,7 @@ struct NotchContourLineOverlay: View {
     let opacity: Double
     let fillExtent: Double
     let railOpacity: Double
+    let armSpan: Double
     let velocity: Double
     let energy: Double
     let isMutedPulseActive: Bool
@@ -475,7 +541,12 @@ struct NotchContourLineOverlay: View {
     let reduceMotion: Bool
 
     var body: some View {
-        let shape = NotchBottomUShape(islandRect: islandRect, armRun: 0, floatingGap: floatingGap)
+        let shape = NotchBottomUShape(
+            islandRect: islandRect,
+            armRun: 0,
+            fullWidthSpan: CGFloat(armSpan),
+            floatingGap: floatingGap
+        )
         let gradient = LinearGradient(
             colors: [palette.trail.color, palette.lead.color, palette.core.color],
             startPoint: .leading,

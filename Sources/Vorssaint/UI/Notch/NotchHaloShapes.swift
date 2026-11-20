@@ -9,6 +9,7 @@ import SwiftUI
 struct NotchBottomUShape: Shape {
     var islandRect: CGRect
     var armRun: CGFloat
+    var fullWidthSpan: CGFloat = 0
     var floatingGap: CGFloat?
 
     private static let tangent: CGFloat = 0.55228475
@@ -16,14 +17,22 @@ struct NotchBottomUShape: Shape {
     func path(in rect: CGRect) -> Path {
         if let floatingGap {
             let capsule = Path(NotchLayout.capsulePath(in: islandRect, gap: floatingGap))
-            guard armRun > 0 else { return capsule }
             let body = NotchLayout.capsuleBody(in: islandRect, gap: floatingGap)
-            var p = capsule
+            let span = min(1, max(0, fullWidthSpan))
+            let leftArm = fullWidthSpan > 0 ? max(0, body.minX - rect.minX) * span : armRun
+            let rightArm = fullWidthSpan > 0 ? max(0, rect.maxX - body.maxX) * span : armRun
+            guard leftArm > 0 || rightArm > 0 else { return capsule }
+            var p = Path()
             let midY = body.midY
-            p.move(to: CGPoint(x: max(rect.minX, body.minX - armRun), y: midY))
-            p.addLine(to: CGPoint(x: body.minX, y: midY))
-            p.move(to: CGPoint(x: body.maxX, y: midY))
-            p.addLine(to: CGPoint(x: min(rect.maxX, body.maxX + armRun), y: midY))
+            if leftArm > 0 {
+                p.move(to: CGPoint(x: max(rect.minX, body.minX - leftArm), y: midY))
+                p.addLine(to: CGPoint(x: body.minX, y: midY))
+            }
+            p.addPath(capsule)
+            if rightArm > 0 {
+                p.move(to: CGPoint(x: body.maxX, y: midY))
+                p.addLine(to: CGPoint(x: min(rect.maxX, body.maxX + rightArm), y: midY))
+            }
             return p
         }
 
@@ -39,9 +48,13 @@ struct NotchBottomUShape: Shape {
         let minY = islandRect.minY
         let maxY = islandRect.maxY
 
+        let span = min(1, max(0, fullWidthSpan))
+        let leftArm = fullWidthSpan > 0 ? max(0, minX - rect.minX) * span : armRun
+        let rightArm = fullWidthSpan > 0 ? max(0, rect.maxX - maxX) * span : armRun
+
         var p = Path()
-        if armRun > 0 {
-            p.move(to: CGPoint(x: minX - armRun, y: minY))
+        if leftArm > 0 {
+            p.move(to: CGPoint(x: max(rect.minX, minX - leftArm), y: minY))
             p.addLine(to: CGPoint(x: minX, y: minY))
         } else {
             p.move(to: CGPoint(x: minX, y: minY))
@@ -78,8 +91,8 @@ struct NotchBottomUShape: Shape {
             control2: CGPoint(x: maxX - shoulder * t, y: minY)
         )
 
-        if armRun > 0 {
-            p.addLine(to: CGPoint(x: maxX + armRun, y: minY))
+        if rightArm > 0 {
+            p.addLine(to: CGPoint(x: min(rect.maxX, maxX + rightArm), y: minY))
         }
         return p
     }

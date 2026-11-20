@@ -31,7 +31,10 @@ final class NotchHaloController {
 
     private var lastMusicPlaying = false
     private var lastMusicTint: NotchArtworkTint?
+    private var lastAgentRunning = false
+    private var lastAgentTint: Color?
     private var levelExpiryWork: DispatchWorkItem?
+    private var agentAlertExpiryWork: DispatchWorkItem?
     private var haloExpiryWork: DispatchWorkItem?
 
     private init() {
@@ -92,6 +95,13 @@ final class NotchHaloController {
 
         let resting = NotchLightsSupport.showsRestingOutline()
         viewModel.restingOutlineActive = resting
+        viewModel.fullWidthLevelBars = NotchLightsSupport.fullWidthLevelBars()
+        viewModel.fullWidthAgents = NotchLightsSupport.fullWidthAgents()
+        viewModel.fullWidthMusic = NotchLightsSupport.fullWidthMusic()
+        viewModel.fullWidthModifiers = NotchLightsSupport.fullWidthModifiers()
+        viewModel.fullWidthResting = NotchLightsSupport.fullWidthResting()
+        viewModel.agentActive = lastAgentRunning && NotchLightsSupport.tracksAgents()
+        viewModel.agentPalette = resolvedAgentPalette(tint: lastAgentTint, theme: theme)
         viewModel.musicActive = lastMusicPlaying && NotchLightsSupport.tracksMusic()
         viewModel.musicPalette = resolvedMusicPalette(tint: lastMusicTint, theme: theme)
         if viewModel.state == .running && theme != .adaptive {
@@ -118,49 +128,38 @@ final class NotchHaloController {
     }
 
     func updateAgentSessions(_ live: [AgentLiveSession]) {
-        guard NotchLightsSupport.isEnabled(), NotchSupport.isEnabled(), NotchLightsSupport.tracksAgents() else {
-            if viewModel.state == .running {
-                haloExpiryWork?.cancel()
-                haloExpiryWork = nil
-                viewModel.expireHalo(at: Date())
-            }
-            return
+        lastAgentRunning = !live.isEmpty
+        lastAgentTint = live.first?.provider.tint
+        let active = lastAgentRunning
+            && NotchLightsSupport.isEnabled()
+            && NotchSupport.isEnabled()
+            && NotchLightsSupport.tracksAgents()
+        viewModel.agentActive = active
+        if active {
+            viewModel.agentPalette = resolvedAgentPalette(tint: lastAgentTint, theme: viewModel.outlineTheme)
         }
-        if let active = live.first {
-            let palette = viewModel.outlineTheme == .adaptive
-                ? Self.palette(from: active.provider.tint, fallback: .running)
-                : viewModel.outlineTheme.palette
-            haloExpiryWork?.cancel()
-            haloExpiryWork = nil
-            if viewModel.state != .running || viewModel.palette != palette || viewModel.autoFadeDeadline != nil {
-                viewModel.beginOrTransition(to: .running, palette: palette, holdDuration: nil)
-                repositionPanel()
-            }
-        } else if viewModel.state == .running && viewModel.autoFadeDeadline == nil {
-            let hold = 0.45
-            viewModel.autoFadeDeadline = Date().addingTimeInterval(hold)
-            scheduleHaloExpiry(after: hold)
-        }
+        viewModel.refreshContourTarget(at: Date())
+        repositionPanel()
     }
 
     func triggerAgentEvent(_ event: AgentUsageEvent) {
         guard NotchLightsSupport.isEnabled(), NotchSupport.isEnabled(), NotchLightsSupport.tracksAgents() else { return }
         switch event {
         case .finished:
-            viewModel.beginOrTransition(to: .success, palette: .success, holdDuration: 2.4)
-            scheduleHaloExpiry(after: 2.4)
+            viewModel.triggerAgentAlert(palette: .success, holdDuration: 2.4)
+            scheduleAgentAlertExpiry(after: 2.4)
             triggerEdgeWave(palette: .success)
         case .limitWarning:
-            viewModel.beginOrTransition(to: .warning, palette: .warning, holdDuration: 2.8)
-            scheduleHaloExpiry(after: 2.8)
+            viewModel.triggerAgentAlert(palette: .warning, holdDuration: 2.8)
+            scheduleAgentAlertExpiry(after: 2.8)
             triggerEdgeWave(palette: .warning)
         case .limitReset:
-            viewModel.beginOrTransition(to: .success, palette: .success, holdDuration: 2.0)
-            scheduleHaloExpiry(after: 2.0)
+            viewModel.triggerAgentAlert(palette: .success, holdDuration: 2.0)
+            scheduleAgentAlertExpiry(after: 2.0)
             triggerEdgeWave(palette: .success)
         case .budgetReached:
-            viewModel.beginOrTransition(to: .error, palette: .error, holdDuration: 3.0)
-            scheduleHaloExpiry(after: 3.0)
+            viewModel.triggerAgentAlert(palette: .error, holdDuration: 3.0)
+            scheduleAgentAlertExpiry(after: 3.0)
             triggerEdgeWave(palette: .error)
         }
         repositionPanel()
@@ -279,11 +278,19 @@ final class NotchHaloController {
     func stop() {
         levelExpiryWork?.cancel()
         levelExpiryWork = nil
+        agentAlertExpiryWork?.cancel()
+        agentAlertExpiryWork = nil
         haloExpiryWork?.cancel()
         haloExpiryWork = nil
         edgeWave.stop()
         viewModel.deactivate()
         panel?.orderOut(nil)
+    }
+
+    private func resolvedAgentPalette(tint: Color?, theme: NotchOutlineTheme) -> NotchHaloPalette {
+        theme == .adaptive
+            ? (tint.map { Self.palette(from: $0, fallback: .running) } ?? .running)
+            : theme.palette
     }
 
     private func resolvedMusicPalette(tint: NotchArtworkTint?, theme: NotchOutlineTheme) -> NotchHaloPalette {
@@ -301,6 +308,18 @@ final class NotchHaloController {
             self.repositionPanel()
         }
         levelExpiryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + holdDuration + 0.01, execute: work)
+    }
+
+    private func scheduleAgentAlertExpiry(after holdDuration: TimeInterval) {
+        agentAlertExpiryWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.agentAlertExpiryWork = nil
+            self.viewModel.expireAgentAlert(at: Date())
+            self.repositionPanel()
+        }
+        agentAlertExpiryWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + holdDuration + 0.01, execute: work)
     }
 
@@ -370,12 +389,17 @@ final class NotchHaloController {
         }
 
         let scale = (lastScreen ?? NSScreen.main)?.backingScaleFactor ?? 2.0
+        let screenFrame = (lastScreen ?? NSScreen.main)?.frame ?? lastGeometry?.screen
+        let wantsFullWidth = NotchLightsSupport.anyFullWidthEnabled()
+            || viewModel.contourState.usesFullWidth(at: Date().timeIntervalSinceReferenceDate)
         let layout = NotchLightsSupport.overlayLayout(
             islandScreenRect: islandScreenRect,
             floatingGap: gap,
             armRun: viewModel.armWidth.points,
             thicknessScale: viewModel.thicknessScale,
-            screenScale: scale
+            screenScale: scale,
+            screenFrame: screenFrame,
+            fullWidth: wantsFullWidth
         )
 
         let pan = ensurePanel(frame: layout.overlayScreenRect)

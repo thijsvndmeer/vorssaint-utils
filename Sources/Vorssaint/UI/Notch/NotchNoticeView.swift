@@ -20,6 +20,7 @@ struct NotchNoticeView: View {
         // The timer's notice keeps the orange its strip and page wear.
         case .timer: return .orange
         case .volume, .brightness, .keyboardLight: return NotchGlanceLevelBar.accentColor(for: notice)
+        case .clipboard where notice.symbol == "clipboard.fill": return Color(red: 0.45, green: 0.90, blue: 0.85)
         default: return .white
         }
     }
@@ -113,7 +114,7 @@ struct NotchNoticeView: View {
             // A level's mark keeps its place while a shorter reading leaves
             // room it holds for the widest.
             .frame(maxWidth: .infinity, alignment: notice.readsFromEnds || notice.level != nil ? .leading : .trailing)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: notice.detail)
+            .animation(reduceMotion ? nil : .interpolatingSpring(stiffness: 240, damping: 27), value: notice.detail)
             .transaction { $0.disablesAnimations = false }
         }
     }
@@ -135,7 +136,7 @@ struct NotchNoticeView: View {
                     NotchMeter(value: level, height: 5, tint: tint)
                 }
             }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: level)
+            .animation(reduceMotion ? nil : .interpolatingSpring(stiffness: 240, damping: 27), value: level)
             .transaction { $0.disablesAnimations = false }
         } else {
             Text(notice.detail)

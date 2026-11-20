@@ -594,3 +594,203 @@ enum NotchEdgeWaveShaderSource {
     }
     """
 }
+
+// MARK: - Fluid level physics, brightness observer, modifier indicators & paste trigger
+
+/// Critically-damped spring interpolation for 120Hz notch level gauges so
+/// successive volume or brightness steps glide continuously with C1 velocity.
+struct NotchFluidLevelSpring: Equatable {
+    var startValue: Double = 0
+    var startVelocity: Double = 0
+    var targetValue: Double = 0
+    var startTime: TimeInterval = 0
+    var peakEnergy: Double = 0
+
+    static let angularFrequency: Double = 20.0
+
+    func sample(at time: TimeInterval, reduceMotion: Bool = false) -> (value: Double, velocity: Double, energy: Double) {
+        let clampedTarget = targetValue.isFinite ? min(1, max(0, targetValue)) : 0
+        if reduceMotion {
+            return (clampedTarget, 0, 0)
+        }
+        let dt = max(0, time - startTime)
+        let w = Self.angularFrequency
+        let x0 = startValue - clampedTarget
+        let c2 = startVelocity + w * x0
+        let decay = exp(-w * dt)
+        let value = min(1, max(0, clampedTarget + (x0 + c2 * dt) * decay))
+        let velocity = (startVelocity - w * c2 * dt) * decay
+        let impulse = peakEnergy * exp(-dt / 0.26)
+        let kinetic = min(0.85, abs(velocity) * 0.22)
+        let energy = min(1.0, max(impulse, kinetic))
+        return (value, velocity, energy)
+    }
+
+    mutating func retarget(to newTarget: Double, at time: TimeInterval, continuing: Bool) {
+        let clamped = newTarget.isFinite ? min(1, max(0, newTarget)) : 0
+        if continuing {
+            let cur = sample(at: time)
+            startValue = cur.value
+            startVelocity = cur.velocity
+            peakEnergy = min(1.0, max(cur.energy * 0.85, 0.35 + abs(clamped - cur.value) * 2.4))
+        } else {
+            startValue = clamped
+            startVelocity = 0
+            peakEnergy = 0.55
+        }
+        targetValue = clamped
+        startTime = time
+    }
+}
+
+/// Filters ambient auto-brightness drift while catching hardware brightness keys,
+/// Control Center drags, Touch Bar sliders, and Vorssaint slider changes without duplicates.
+struct NotchBrightnessChangeDetector: Equatable {
+    private(set) var baseline: Double?
+    private(set) var lastUserKeyAt: TimeInterval = -.infinity
+    private(set) var lastUserBurstAt: TimeInterval = -.infinity
+    private(set) var lastHandledValue: Double?
+    private(set) var lastHandledAt: TimeInterval = -.infinity
+
+    mutating func noteKeyPress(at now: TimeInterval) {
+        lastUserKeyAt = now
+    }
+
+    mutating func noteHandled(level: Double, at now: TimeInterval) {
+        guard level.isFinite else { return }
+        let clamped = min(1, max(0, level))
+        baseline = clamped
+        lastHandledValue = clamped
+        lastHandledAt = now
+        lastUserBurstAt = now
+    }
+
+    mutating func observe(level: Double, at now: TimeInterval, forceBoundaryOnKey: Bool = false) -> Double? {
+        guard level.isFinite else { return nil }
+        let clamped = min(1, max(0, level))
+        guard let previous = baseline else {
+            baseline = clamped
+            return nil
+        }
+        if let handled = lastHandledValue,
+           now - lastHandledAt < 0.25,
+           abs(clamped - handled) < 0.008 {
+            baseline = clamped
+            return nil
+        }
+
+        let delta = abs(clamped - previous)
+        let recentKey = (now - lastUserKeyAt) < 0.65
+        let recentBurst = (now - lastUserBurstAt) < 0.85
+        let atBoundary = clamped <= 0.001 || clamped >= 0.999
+
+        let accepted = delta >= 0.014
+            || (recentKey && delta >= 0.002)
+            || (recentBurst && delta >= 0.004)
+            || (forceBoundaryOnKey && recentKey && atBoundary)
+
+        baseline = clamped
+        if accepted {
+            lastUserBurstAt = now
+            return clamped
+        }
+        return nil
+    }
+}
+
+/// Live keyboard lock/modifier indicator shown inside and around the Dynamic Island.
+enum NotchModifierIndicator: Equatable {
+    case capsLock
+    case shift
+    case both
+
+    static func from(capsLock: Bool, shift: Bool) -> NotchModifierIndicator? {
+        switch (capsLock, shift) {
+        case (true, true): return .both
+        case (true, false): return .capsLock
+        case (false, true): return .shift
+        case (false, false): return nil
+        }
+    }
+
+    var wings: NotchNoticeWings {
+        switch self {
+        case .capsLock: return NotchNoticeWings(leading: 54, trailing: 54)
+        case .shift: return NotchNoticeWings(leading: 56, trailing: 56)
+        case .both: return NotchNoticeWings(leading: 66, trailing: 66)
+        }
+    }
+
+    func label(_ strings: NotchLightsStrings) -> String {
+        switch self {
+        case .capsLock: return strings.capsLock
+        case .shift: return strings.shiftHeld
+        case .both: return "\(strings.capsLock) · ⇧"
+        }
+    }
+
+    var accentRGB: NotchHaloRGB {
+        switch self {
+        case .capsLock: return NotchHaloRGB(r: 1.00, g: 0.78, b: 0.28)
+        case .shift: return NotchHaloRGB(r: 0.56, g: 0.88, b: 1.00)
+        case .both: return NotchHaloRGB(r: 1.00, g: 0.84, b: 0.45)
+        }
+    }
+}
+
+/// Debounces held Shift keys (220ms) so fast capital typing never flickers the island,
+/// while reflecting Caps Lock state immediately.
+struct NotchModifierHoldTracker: Equatable {
+    static let shiftHoldDelay: TimeInterval = 0.22
+
+    private(set) var capsLockOn = false
+    private(set) var shiftPhysicallyDown = false
+    private(set) var shiftDownAt: TimeInterval?
+    private(set) var shiftAnnounced = false
+
+    var indicator: NotchModifierIndicator? {
+        NotchModifierIndicator.from(capsLock: capsLockOn, shift: shiftAnnounced)
+    }
+
+    @discardableResult
+    mutating func update(capsLock: Bool, shiftDown: Bool, otherModifiersDown: Bool, at now: TimeInterval) -> NotchModifierIndicator? {
+        capsLockOn = capsLock
+        if !shiftDown || otherModifiersDown {
+            shiftPhysicallyDown = false
+            shiftDownAt = nil
+            shiftAnnounced = false
+        } else if !shiftPhysicallyDown {
+            shiftPhysicallyDown = true
+            shiftDownAt = now
+            shiftAnnounced = false
+        } else if let downAt = shiftDownAt, now - downAt >= Self.shiftHoldDelay {
+            shiftAnnounced = true
+        }
+        return indicator
+    }
+
+    @discardableResult
+    mutating func tick(at now: TimeInterval) -> NotchModifierIndicator? {
+        if shiftPhysicallyDown, !shiftAnnounced, let downAt = shiftDownAt, now - downAt >= Self.shiftHoldDelay {
+            shiftAnnounced = true
+        }
+        return indicator
+    }
+}
+
+/// Identifies Command-V / Shift-Option-Command-V paste keystrokes and debounces bursts.
+struct NotchPasteDetector: Equatable {
+    static let debounceInterval: TimeInterval = 0.25
+    private(set) var lastReportedAt: TimeInterval = -.infinity
+
+    static func isPasteKey(keyCode: UInt16, charactersIgnoringModifiers: String?, command: Bool, control: Bool) -> Bool {
+        guard command, !control else { return false }
+        return keyCode == 9 || charactersIgnoringModifiers?.lowercased() == "v"
+    }
+
+    mutating func recordPaste(at now: TimeInterval) -> Bool {
+        guard now - lastReportedAt >= Self.debounceInterval else { return false }
+        lastReportedAt = now
+        return true
+    }
+}

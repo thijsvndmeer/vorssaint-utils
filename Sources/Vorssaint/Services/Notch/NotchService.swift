@@ -145,6 +145,7 @@ final class NotchService: ObservableObject {
     @Published private(set) var sectionRow = 0
     @Published private(set) var modules: [NotchModule] = []
     @Published private(set) var notice: NotchNotice?
+    @Published private(set) var modifierIndicator: NotchModifierIndicator? = nil
     @Published private(set) var noticeExpanded = false
     /// A compact notice stays drawn while the island closes around it.
     @Published private(set) var departingNotice: NotchNotice?
@@ -980,6 +981,7 @@ final class NotchService: ObservableObject {
                 contentHeight: notice.previewContentHeight(width: geometry.notificationPreviewContentWidth))
         }
         if peeking { return geometry.peek }
+        if let modifier = modifierIndicator { return geometry.noticeSize(wings: modifier.wings) }
         if showsCompactActivityPicker { return compactActivityPickerLayout.size }
         if compactActivity != nil {
             var resting = compactActivityGeometry.compactActivitySize
@@ -1021,6 +1023,14 @@ final class NotchService: ObservableObject {
         if captureControls != nil { return captureControlsCollapsed ? NotchCapsuleLayout.captureSurface(geometry: geometry) : nil }
         if let notice { return noticeExpanded ? nil : capsuleNoticeSize(notice) }
         if peeking || showsCompactActivityPicker { return nil }
+        if let modifier = modifierIndicator {
+            let label = modifier.label(NotchLightsStrings.localized(L10n.shared.language))
+            return NotchCapsuleLayout.surface(
+                content: NotchCapsuleLayout.noticeContent(title: label, detail: "", level: false),
+                maximum: NotchCapsuleLayout.Maximum.notice,
+                geometry: geometry
+            )
+        }
         // At rest the charge or the allowance fits inside the bare capsule.
         let resting = compactActivity.map { capsuleStripSize(for: $0, companion: compactCompanion) }
             ?? geometry.restingSize(showsContent: false)
@@ -1221,6 +1231,7 @@ final class NotchService: ObservableObject {
         if captureControls != nil, !NotchSupport.routesCaptureControls() { cancelCaptureControls() }
         syncNoticeWithPreferences()
         NotchHaloController.shared.syncWithPreferences()
+        NotchInputFeedbackService.shared.syncWithPreferences()
         syncHaloLayout()
         syncVisibleConsumers()
         // Turning the companion on or off grows or folds the wings it rests
@@ -1349,6 +1360,8 @@ final class NotchService: ObservableObject {
         NotchNotificationService.shared.stop()
         AgentUsageService.shared.pause()
         NotchHaloController.shared.stop()
+        NotchInputFeedbackService.shared.stop()
+        modifierIndicator = nil
         settingsSignature = ""
         expanded = false
         peeking = false
@@ -4364,10 +4377,45 @@ final class NotchService: ObservableObject {
                 NotchHaloController.shared.updateMusic(playing: playback?.isPlaying == true, tint: tint)
             }.store(in: &subscriptions)
         $notice.compactMap { $0 }
-            .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { NotchHaloController.shared.triggerNotice($0) }
             .store(in: &subscriptions)
+        NotchInputFeedbackService.shared.$modifierIndicator
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] indicator in
+                self?.modifierIndicator = indicator
+                self?.refreshPresentation()
+                NotchHaloController.shared.updateModifierIndicator(indicator)
+            }.store(in: &subscriptions)
+        NotchInputFeedbackService.shared.brightnessChanged
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] level in
+                let shown = self?.showBrightness(level) ?? false
+                if !shown {
+                    NotchHaloController.shared.triggerLevelHUD(kind: .brightness, level: level, muted: false)
+                }
+            }.store(in: &subscriptions)
+        NotchInputFeedbackService.shared.keyboardLightKeyPressed
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                BrightnessService.shared.refreshKeyboardLight()
+                guard let level = BrightnessService.shared.keyboardLightLevel else { return }
+                let shown = self?.showKeyboardLight(Double(level)) ?? false
+                if !shown {
+                    NotchHaloController.shared.triggerLevelHUD(kind: .keyboardLight, level: Double(level), muted: false)
+                }
+            }.store(in: &subscriptions)
+        NotchInputFeedbackService.shared.pasteTriggered
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                let clipText = FeatureStrings.clipboard(L10n.shared.language)
+                let lightsText = NotchLightsStrings.localized(L10n.shared.language)
+                _ = self.show(NotchNotice(event: .clipboard, title: lightsText.pasted,
+                                          detail: clipText.title, symbol: "clipboard.fill"))
+                NotchHaloController.shared.triggerPastePulse()
+            }.store(in: &subscriptions)
         Publishers.MergeMany([
             $geometry.map { _ in () }.eraseToAnyPublisher(),
             $expanded.map { _ in () }.eraseToAnyPublisher(),
@@ -4375,7 +4423,8 @@ final class NotchService: ObservableObject {
             $hiddenInFullscreen.map { _ in () }.eraseToAnyPublisher(),
             $departingNotice.map { _ in () }.eraseToAnyPublisher(),
             $dragPlaceholder.map { _ in () }.eraseToAnyPublisher(),
-            $musicStripNamed.map { _ in () }.eraseToAnyPublisher()
+            $musicStripNamed.map { _ in () }.eraseToAnyPublisher(),
+            $modifierIndicator.map { _ in () }.eraseToAnyPublisher()
         ])
         .receive(on: DispatchQueue.main)
         .sink { [weak self] _ in

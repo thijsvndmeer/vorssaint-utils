@@ -77,6 +77,7 @@ struct NotchCapsuleNoticeView: View {
         case .agents: return notice.symbol.hasPrefix("exclamationmark") ? .orange : notice.agent?.tint ?? .white
         case .timer: return .orange
         case .volume, .brightness, .keyboardLight: return NotchGlanceLevelBar.accentColor(for: notice)
+        case .clipboard where notice.symbol == "clipboard.fill": return Color(red: 0.45, green: 0.90, blue: 0.85)
         default: return .white
         }
     }
@@ -119,14 +120,14 @@ struct NotchCapsuleNoticeView: View {
                 }
             }
             .frame(width: CapsuleLayout.meterWidth)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: level)
+            .animation(reduceMotion ? nil : .interpolatingSpring(stiffness: 240, damping: 27), value: level)
             Text(notice.detail)
                 .font(Font(CapsuleLayout.levelFont as CTFont))
                 .lineLimit(1)
                 .contentTransition(.numericText())
                 .frame(width: CapsuleLayout.levelReadingWidth(notice.detail), alignment: .trailing)
         }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: notice.detail)
+        .animation(reduceMotion ? nil : .interpolatingSpring(stiffness: 240, damping: 27), value: notice.detail)
         .transaction { $0.disablesAnimations = false }
     }
 

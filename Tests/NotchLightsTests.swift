@@ -13,6 +13,10 @@ enum NotchLightsTests {
         overlayGeometry(suite)
         uniformMemoryLayout(suite)
         metalShaderCompilation(suite)
+        fluidLevelSpring(suite)
+        brightnessChangeDetector(suite)
+        modifierHoldTracker(suite)
+        pasteDetector(suite)
     }
 
     private static func defaultsAndBackup(_ suite: TestSuite) {
@@ -130,5 +134,90 @@ enum NotchLightsTests {
         } catch {
             suite.expect(false, "EdgeWave MSL runtime compilation failed: \(error)")
         }
+    }
+
+    private static func fluidLevelSpring(_ suite: TestSuite) {
+        var spring = NotchFluidLevelSpring()
+        spring.retarget(to: 0.25, at: 10.0, continuing: false)
+        let s0 = spring.sample(at: 10.0)
+        suite.expect(abs(s0.value - 0.25) < 0.0001 && s0.energy >= 0.5,
+                     "initial level activation lands immediately with non-zero kinetic energy")
+
+        spring.retarget(to: 0.75, at: 10.0, continuing: true)
+        let midUp = spring.sample(at: 10.06)
+        suite.expect(midUp.value > 0.25 && midUp.value < 0.75 && midUp.velocity > 0,
+                     "continuing upward retarget glides smoothly without overshoot")
+
+        // Mid-flight reverse preserves C1 continuous position & velocity.
+        spring.retarget(to: 0.20, at: 10.06, continuing: true)
+        let revAtSwitch = spring.sample(at: 10.06)
+        let revLater = spring.sample(at: 10.14)
+        let settled = spring.sample(at: 10.60)
+        suite.expect(abs(revAtSwitch.value - midUp.value) < 0.0001
+                        && abs(revAtSwitch.velocity - midUp.velocity) < 0.0001
+                        && revLater.value < revAtSwitch.value
+                        && abs(settled.value - 0.20) < 0.001,
+                     "reverse retarget preserves C1 continuity and settles critically onto target")
+
+        let reduced = spring.sample(at: 10.01, reduceMotion: true)
+        suite.expect(reduced.value == 0.20 && reduced.velocity == 0 && reduced.energy == 0,
+                     "Reduce Motion snaps level immediately without spring energy")
+    }
+
+    private static func brightnessChangeDetector(_ suite: TestSuite) {
+        var detector = NotchBrightnessChangeDetector()
+        suite.expect(detector.observe(level: 0.50, at: 1.0) == nil,
+                     "initial brightness sample seeds baseline quietly")
+        suite.expect(detector.observe(level: 0.504, at: 2.0) == nil,
+                     "small ambient auto-brightness drift outside key window stays ignored")
+        suite.expect(detector.observe(level: 0.5625, at: 3.0) == 0.5625,
+                     "standard step brightness change triggers feedback")
+
+        // Deduped when BrightnessService already handled the exact adjustment.
+        detector.noteHandled(level: 0.625, at: 4.0)
+        suite.expect(detector.observe(level: 0.625, at: 4.10) == nil,
+                     "recent handled brightness write does not double-fire")
+
+        // Boundary press at 100% / 0% fires once right after a key press.
+        detector.noteHandled(level: 1.0, at: 5.0)
+        detector.noteKeyPress(at: 5.5)
+        suite.expect(detector.observe(level: 1.0, at: 5.6, forceBoundaryOnKey: true) == 1.0,
+                     "repeating key at upper boundary reports HUD without stall")
+    }
+
+    private static func modifierHoldTracker(_ suite: TestSuite) {
+        var tracker = NotchModifierHoldTracker()
+        suite.expect(tracker.update(capsLock: true, shiftDown: false, otherModifiersDown: false, at: 1.0) == .capsLock,
+                     "Caps Lock ON reports immediately")
+        suite.expect(tracker.update(capsLock: false, shiftDown: false, otherModifiersDown: false, at: 1.1) == nil,
+                     "Caps Lock OFF clears indicator immediately")
+
+        // Brief Shift tap (< 0.22s) never flickers during fast typing.
+        suite.expect(tracker.update(capsLock: false, shiftDown: true, otherModifiersDown: false, at: 2.0) == nil,
+                     "initial Shift press waits for hold debounce threshold")
+        suite.expect(tracker.tick(at: 2.15) == nil,
+                     "Shift held under 220ms does not trigger indicator")
+        suite.expect(tracker.tick(at: 2.23) == .shift,
+                     "Shift held at least 220ms activates Shift indicator")
+
+        // Holding Shift together with Command cancels Shift indicator.
+        suite.expect(tracker.update(capsLock: true, shiftDown: true, otherModifiersDown: false, at: 2.5) == .both,
+                     "Caps Lock ON + held Shift reports combined indicator")
+        suite.expect(tracker.update(capsLock: true, shiftDown: true, otherModifiersDown: true, at: 2.6) == .capsLock,
+                     "Cmd/Ctrl/Opt cancels Shift hold while keeping Caps Lock indicator")
+    }
+
+    private static func pasteDetector(_ suite: TestSuite) {
+        suite.expect(NotchPasteDetector.isPasteKey(keyCode: 9, charactersIgnoringModifiers: "v", command: true, control: false)
+                        && !NotchPasteDetector.isPasteKey(keyCode: 9, charactersIgnoringModifiers: "v", command: false, control: false)
+                        && !NotchPasteDetector.isPasteKey(keyCode: 9, charactersIgnoringModifiers: "v", command: true, control: true)
+                        && !NotchPasteDetector.isPasteKey(keyCode: 8, charactersIgnoringModifiers: "c", command: true, control: false),
+                     "paste key detection matches Command-V without Control")
+
+        var detector = NotchPasteDetector()
+        suite.expect(detector.recordPaste(at: 10.0)
+                        && !detector.recordPaste(at: 10.12)
+                        && detector.recordPaste(at: 10.26),
+                     "paste burst detector debounces duplicates inside 250ms window")
     }
 }

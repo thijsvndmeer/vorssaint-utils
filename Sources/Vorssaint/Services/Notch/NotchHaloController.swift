@@ -89,7 +89,7 @@ final class NotchHaloController {
         viewModel.restingOutlineActive = resting
         if viewModel.state == .idle {
             viewModel.palette = theme.palette
-            viewModel.isVisible = resting || viewModel.levelKind != nil
+            viewModel.isVisible = resting || viewModel.levelKind != nil || viewModel.modifierAccent != nil
             viewModel.isAnimating = viewModel.isVisible
         } else if viewModel.state == .running && theme != .adaptive {
             viewModel.palette = theme.palette
@@ -175,16 +175,41 @@ final class NotchHaloController {
         repositionPanel()
     }
 
+    func triggerPastePulse() {
+        guard NotchLightsSupport.isEnabled(), NotchSupport.isEnabled(), NotchLightsSupport.tracksCopy() else { return }
+        viewModel.triggerPastePulse(palette: NotchHaloPalette.matching(r: 0.45, g: 0.90, b: 0.85))
+        repositionPanel()
+    }
+
+    func triggerLevelHUD(kind: NotchLevelBarKind, level: Double, muted: Bool, holdDuration: TimeInterval = 1.9) {
+        guard NotchLightsSupport.isEnabled(), NotchSupport.isEnabled(), NotchLightsSupport.tracksLevelBars() else { return }
+        viewModel.triggerLevelHUD(kind: kind, level: level, muted: muted, holdDuration: holdDuration)
+        repositionPanel()
+    }
+
+    func updateModifierIndicator(_ indicator: NotchModifierIndicator?) {
+        viewModel.modifierAccent = indicator
+        guard NotchLightsSupport.isEnabled(), NotchSupport.isEnabled() else { return }
+        if viewModel.state == .idle {
+            viewModel.isVisible = viewModel.restingOutlineActive || viewModel.levelKind != nil || indicator != nil
+            viewModel.isAnimating = viewModel.isVisible
+        }
+        repositionPanel()
+    }
+
     func triggerNotice(_ notice: NotchNotice) {
         guard NotchLightsSupport.isEnabled(), NotchSupport.isEnabled() else { return }
 
         if let kind = Self.levelBarKind(for: notice.event), NotchLightsSupport.tracksLevelBars() {
             let level = notice.level ?? 0
             let muted = kind == .volume && level <= 0.001
-            viewModel.triggerLevelHUD(kind: kind, level: level, muted: muted, holdDuration: max(1.4, notice.event.duration + 0.35))
+            viewModel.triggerLevelHUD(kind: kind, level: level, muted: muted, holdDuration: max(1.5, notice.event.duration + 0.35))
             repositionPanel()
             return
         }
+
+        // Copy and paste use dedicated subtle hairline sweeps, never the full halo burst.
+        if notice.event == .clipboard { return }
 
         guard NotchLightsSupport.tracksNotices() else { return }
         let palette: NotchHaloPalette = {
@@ -247,6 +272,7 @@ final class NotchHaloController {
     func stop() {
         edgeWave.stop()
         viewModel.restingOutlineActive = false
+        viewModel.modifierAccent = nil
         viewModel.deactivate()
         panel?.orderOut(nil)
     }

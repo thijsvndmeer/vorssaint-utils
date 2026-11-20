@@ -76,6 +76,43 @@ struct NotchMeter: View {
     }
 }
 
+private struct NotchFluidBarFillShape: Shape {
+    var fraction: Double
+    var minWidth: CGFloat
+
+    var animatableData: Double {
+        get { fraction }
+        set { fraction = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        let clamped = fraction.isFinite ? min(1, max(0, fraction)) : 0
+        guard clamped > 0.0001 else { return Path() }
+        let width = min(rect.width, max(minWidth, rect.width * CGFloat(clamped)))
+        return Capsule(style: .continuous).path(in: CGRect(x: 0, y: 0, width: width, height: rect.height))
+    }
+}
+
+private struct NotchFluidTipDotShape: Shape {
+    var fraction: Double
+    var minWidth: CGFloat
+
+    var animatableData: Double {
+        get { fraction }
+        set { fraction = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        let clamped = fraction.isFinite ? min(1, max(0, fraction)) : 0
+        let width = min(rect.width, max(minWidth, rect.width * CGFloat(clamped)))
+        let dotSize = max(2.5, rect.height - 1)
+        guard clamped > 0.0001, width > rect.height * 1.6 else { return Path() }
+        let x = width - dotSize - 1
+        let y = (rect.height - dotSize) * 0.5
+        return Path(ellipseIn: CGRect(x: x, y: y, width: dotSize, height: dotSize))
+    }
+}
+
 /// Glance-inspired luminous prism bar used for Audio (Volume/Mute) and
 /// Brightness / Keyboard-Light HUD overlays inside the notch.
 struct NotchGlanceLevelBar: View {
@@ -83,20 +120,25 @@ struct NotchGlanceLevelBar: View {
     let kind: NotchLevelBarKind
     var muted: Bool = false
     var height: CGFloat = 5
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let fraction = muted ? 0.0 : (value.isFinite ? min(1, max(0, value)) : 0)
         let prism = NotchLevelPrismPalette.palette(for: kind, muted: muted)
-        GeometryReader { proxy in
-            let fillWidth = max(fraction > 0 ? height : 0, proxy.size.width * fraction)
-            ZStack(alignment: .leading) {
-                Capsule(style: .continuous)
-                    .fill(.white.opacity(0.14))
-                    .overlay {
-                        Capsule(style: .continuous)
-                            .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
-                    }
-                if muted && kind == .volume {
+        let gradient = LinearGradient(
+            colors: [prism.trail.color, prism.lead.color, prism.core.color],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+        ZStack(alignment: .leading) {
+            Capsule(style: .continuous)
+                .fill(.white.opacity(0.14))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
+                }
+            if muted && kind == .volume {
+                GeometryReader { proxy in
                     Capsule(style: .continuous)
                         .fill(
                             LinearGradient(
@@ -107,29 +149,19 @@ struct NotchGlanceLevelBar: View {
                         )
                         .frame(width: max(height * 1.4, proxy.size.width * 0.08))
                         .shadow(color: prism.lead.color.opacity(0.55), radius: 3)
-                } else if fraction > 0 {
-                    ZStack(alignment: .trailing) {
-                        Capsule(style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [prism.trail.color, prism.lead.color, prism.core.color],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                        if fillWidth > height * 1.6 {
-                            Circle()
-                                .fill(Color.white.opacity(0.9))
-                                .frame(width: max(2.5, height - 1), height: max(2.5, height - 1))
-                                .padding(.trailing, 1)
-                        }
-                    }
-                    .frame(width: fillWidth)
-                    .shadow(color: prism.lead.color.opacity(0.65), radius: 4, x: 0, y: 0)
+                }
+            } else {
+                ZStack {
+                    NotchFluidBarFillShape(fraction: fraction, minWidth: height)
+                        .fill(gradient)
+                        .shadow(color: prism.lead.color.opacity(0.65), radius: 4, x: 0, y: 0)
+                    NotchFluidTipDotShape(fraction: fraction, minWidth: height)
+                        .fill(Color.white.opacity(0.9))
                 }
             }
         }
         .frame(height: height)
+        .animation(reduceMotion ? nil : .interpolatingSpring(stiffness: 240, damping: 27), value: fraction)
         .accessibilityHidden(true)
     }
 
@@ -169,6 +201,96 @@ struct NotchGlanceLevelBar: View {
         guard usesGlanceBars(), let kind = levelKind(for: notice.event) else { return .white }
         let muted = kind == .volume && (notice.level ?? 0) <= 0.001
         return NotchLevelPrismPalette.palette(for: kind, muted: muted).lead.color
+    }
+}
+
+/// Dynamic Island wing strip indicating Caps Lock ON and/or Shift held on notched displays.
+struct NotchModifierStrip: View {
+    let indicator: NotchModifierIndicator
+    let geometry: NotchGeometry
+    @ObservedObject private var l10n = L10n.shared
+
+    var body: some View {
+        let wings = indicator.wings
+        let tint = indicator.accentRGB.color
+        let label = indicator.label(NotchLightsStrings.localized(l10n.language))
+        HStack(spacing: 0) {
+            Group {
+                switch indicator {
+                case .capsLock:
+                    Image(systemName: "capslock.fill")
+                case .shift:
+                    Image(systemName: "shift.fill")
+                case .both:
+                    HStack(spacing: 4) {
+                        Image(systemName: "capslock.fill")
+                        Image(systemName: "shift.fill")
+                    }
+                }
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(tint)
+            .shadow(color: tint.opacity(0.65), radius: 4)
+            .padding(.leading, 13)
+            .frame(width: wings.leading, height: geometry.stripHeight, alignment: .leading)
+            .clipped()
+
+            Color.clear.frame(width: geometry.noticeCameraGap)
+
+            Text(label)
+                .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                .tracking(0.35)
+                .foregroundStyle(tint.opacity(0.95))
+                .lineLimit(1)
+                .padding(.trailing, 13)
+                .frame(width: wings.trailing, height: geometry.stripHeight, alignment: .trailing)
+                .clipped()
+        }
+        .frame(height: geometry.stripHeight)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+    }
+}
+
+/// Floating capsule strip indicating Caps Lock ON and/or Shift held on non-notched displays.
+struct NotchCapsuleModifierStrip: View {
+    let indicator: NotchModifierIndicator
+    let geometry: NotchGeometry
+    let size: CGSize
+    @ObservedObject private var l10n = L10n.shared
+
+    var body: some View {
+        let side = NotchCapsuleLayout.side(geometry)
+        let tint = indicator.accentRGB.color
+        let label = indicator.label(NotchLightsStrings.localized(l10n.language))
+        HStack(spacing: NotchCapsuleLayout.spacing) {
+            Group {
+                switch indicator {
+                case .capsLock:
+                    Image(systemName: "capslock.fill")
+                case .shift:
+                    Image(systemName: "shift.fill")
+                case .both:
+                    HStack(spacing: 3) {
+                        Image(systemName: "capslock.fill")
+                        Image(systemName: "shift.fill")
+                    }
+                }
+            }
+            .font(.system(size: NotchCapsuleLayout.symbolSize, weight: .semibold))
+            .foregroundStyle(tint)
+            .shadow(color: tint.opacity(0.6), radius: 3)
+
+            Text(label)
+                .font(Font(NotchCapsuleLayout.titleFont as CTFont))
+                .foregroundStyle(tint.opacity(0.95))
+                .lineLimit(1)
+        }
+        .padding(.leading, side + NotchCapsuleLayout.endPadding)
+        .padding(.trailing, side + NotchCapsuleLayout.endPadding)
+        .frame(width: size.width, height: geometry.stripHeight)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
     }
 }
 

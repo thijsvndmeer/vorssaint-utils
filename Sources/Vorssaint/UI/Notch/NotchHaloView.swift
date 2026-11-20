@@ -30,6 +30,8 @@ final class NotchHaloViewModel: ObservableObject {
     @Published var levelMuted: Bool = false
     @Published var levelDirection: Double = 1
     @Published var modifierAccent: NotchModifierIndicator? = nil
+    @Published var musicActive: Bool = false
+    @Published var musicPalette: NotchHaloPalette = .running
 
     @Published var isVisible: Bool = false
     @Published var isAnimating: Bool = false
@@ -41,10 +43,36 @@ final class NotchHaloViewModel: ObservableObject {
     var contourPulseStart: Date = .distantPast
     var ignitionStart: Date = .distantPast
     var levelSpring = NotchFluidLevelSpring()
-    var levelAppearAt: Date = .distantPast
     var levelUpdatedAt: Date = .distantPast
     var levelHoldUntil: Date = .distantPast
     var autoFadeDeadline: Date?
+    var contourState = NotchContourLineState()
+
+    func refreshContourTarget(at now: Date = Date()) {
+        let t = now.timeIntervalSinceReferenceDate
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let levelValid = levelKind != nil && levelHoldUntil > now
+        let activeLevelKind = levelValid ? levelKind : nil
+        let fullHaloActive = state != .idle && (autoFadeDeadline.map { $0 > now } ?? true)
+        let owner = NotchContourLineState.resolveOwner(
+            levelKind: activeLevelKind,
+            levelMuted: levelMuted,
+            modifier: modifierAccent,
+            musicActive: musicActive,
+            restingActive: restingOutlineActive,
+            fullHaloActive: fullHaloActive
+        )
+        let palette = owner.map {
+            NotchContourLineState.palette(for: $0, musicPalette: musicPalette, restingPalette: outlineTheme.palette)
+        }
+        let liveLevel = levelSpring.sample(at: t, reduceMotion: reduceMotion).value
+        contourState.update(owner: owner, palette: palette, liveLevel: liveLevel, at: t, reduceMotion: reduceMotion)
+        let activeSample = contourState.sample(at: t, liveLevel: liveLevel, reduceMotion: reduceMotion)
+        if owner != nil || activeSample.isActive || fullHaloActive {
+            isVisible = true
+            isAnimating = true
+        }
+    }
 
     func beginOrTransition(to newState: NotchHaloState, palette newPalette: NotchHaloPalette, holdDuration: TimeInterval? = nil) {
         let now = Date()
@@ -65,13 +93,13 @@ final class NotchHaloViewModel: ObservableObject {
         }
 
         autoFadeDeadline = holdDuration.map { now.addingTimeInterval($0) }
+        refreshContourTarget(at: now)
     }
 
     func triggerCopySweep(palette sweepPalette: NotchHaloPalette? = nil) {
         let now = Date()
         if state == .idle {
             palette = sweepPalette ?? outlineTheme.palette
-            autoFadeDeadline = now.addingTimeInterval(0.56)
         }
         copySweepStart = now
         isVisible = true
@@ -82,7 +110,6 @@ final class NotchHaloViewModel: ObservableObject {
         let now = Date()
         if state == .idle {
             palette = pulsePalette ?? outlineTheme.palette
-            autoFadeDeadline = now.addingTimeInterval(0.52)
         }
         pastePulseStart = now
         isVisible = true
@@ -102,10 +129,7 @@ final class NotchHaloViewModel: ObservableObject {
     func triggerLevelHUD(kind: NotchLevelBarKind, level: Double, muted: Bool, holdDuration: TimeInterval = 1.9) {
         let now = Date()
         let clamped = level.isFinite ? min(1, max(0, level)) : 0
-        let continuing = levelKind == kind && levelHoldUntil > now
-        if !continuing {
-            levelAppearAt = now
-        }
+        let continuing = levelKind != nil && !levelMuted && levelHoldUntil > now
         levelSpring.retarget(to: clamped, at: now.timeIntervalSinceReferenceDate, continuing: continuing)
         levelDirection = clamped >= levelValue ? 1.0 : -1.0
         levelKind = kind
@@ -113,8 +137,47 @@ final class NotchHaloViewModel: ObservableObject {
         levelMuted = muted
         levelUpdatedAt = now
         levelHoldUntil = now.addingTimeInterval(holdDuration)
+        refreshContourTarget(at: now)
         isVisible = true
         isAnimating = true
+    }
+
+    func expireLevelHUD(at now: Date = Date()) {
+        guard levelKind != nil else { return }
+        levelKind = nil
+        levelHoldUntil = .distantPast
+        refreshContourTarget(at: now)
+    }
+
+    func expireHalo(at now: Date = Date()) {
+        guard state != .idle else { return }
+        state = .idle
+        autoFadeDeadline = nil
+        refreshContourTarget(at: now)
+    }
+
+    func settleIfIdle(at now: Date = Date()) {
+        if state != .idle, autoFadeDeadline.map({ $0 <= now }) == true {
+            state = .idle
+            autoFadeDeadline = nil
+            refreshContourTarget(at: now)
+        }
+        if levelKind != nil && levelHoldUntil <= now {
+            levelKind = nil
+            levelHoldUntil = .distantPast
+            refreshContourTarget(at: now)
+        }
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let sampled = contourState.sample(at: now.timeIntervalSinceReferenceDate, liveLevel: levelValue, reduceMotion: reduceMotion)
+        let copyDone = now.timeIntervalSince(copySweepStart) >= 0.52
+        let pasteDone = now.timeIntervalSince(pastePulseStart) >= 0.48
+        let pulseDone = now.timeIntervalSince(contourPulseStart) >= 0.85
+        let ignitionDone = entryMode != .blast || now.timeIntervalSince(ignitionStart) >= 3.54
+        if state == .idle && levelKind == nil && contourState.targetOwner == nil && !sampled.isActive
+            && copyDone && pasteDone && pulseDone && ignitionDone {
+            isVisible = false
+            isAnimating = false
+        }
     }
 
     func deactivate() {
@@ -122,15 +185,12 @@ final class NotchHaloViewModel: ObservableObject {
         autoFadeDeadline = nil
         levelKind = nil
         levelHoldUntil = .distantPast
-        let keepAmbient = restingOutlineActive || modifierAccent != nil
-        if keepAmbient {
-            palette = outlineTheme.palette
-            isVisible = true
-            isAnimating = true
-        } else {
-            isVisible = false
-            isAnimating = false
-        }
+        musicActive = false
+        modifierAccent = nil
+        restingOutlineActive = false
+        contourState.reset()
+        isVisible = false
+        isAnimating = false
     }
 }
 
@@ -158,7 +218,6 @@ struct NotchHaloView: View {
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let adapted = model.palette.adapted(lightSurface: model.isLightSurface, style: model.surfaceStyle)
         let adaptedPrev = model.previousPalette.adapted(lightSurface: model.isLightSurface, style: model.surfaceStyle)
-        let themeAdapted = model.outlineTheme.palette.adapted(lightSurface: model.isLightSurface, style: model.surfaceStyle)
 
         let entryElapsed = max(0, now.timeIntervalSince(model.entryStart))
         let transElapsed = max(0, now.timeIntervalSince(model.transitionStart))
@@ -169,6 +228,11 @@ struct NotchHaloView: View {
         let levelRemaining = model.levelHoldUntil.timeIntervalSince(now)
         let levelActive = model.levelKind != nil && levelRemaining > 0
         let sampledLevel = model.levelSpring.sample(at: now.timeIntervalSinceReferenceDate, reduceMotion: reduceMotion)
+        let contourSample = model.contourState.sample(
+            at: now.timeIntervalSinceReferenceDate,
+            liveLevel: sampledLevel.value,
+            reduceMotion: reduceMotion
+        )
 
         let fadeMultiplier: Double = {
             if model.state == .idle { return 0.0 }
@@ -187,7 +251,16 @@ struct NotchHaloView: View {
         )
         let armRun = model.armWidth.points
         let entryProgress = Self.entryReveal(mode: model.entryMode, elapsed: entryElapsed, reduceMotion: reduceMotion)
-        let intensity = min(1.35, model.thicknessScale * entryProgress * fadeMultiplier)
+        let haloDuck: Double = {
+            if model.contourState.targetOwner?.suppressesFullHalo == true {
+                return max(0.0, 1.0 - contourSample.opacity)
+            } else if contourSample.isActive {
+                return max(0.0, 1.0 - contourSample.opacity * 0.85)
+            } else {
+                return 1.0
+            }
+        }()
+        let intensity = min(1.35, model.thicknessScale * entryProgress * fadeMultiplier * haloDuck)
 
         let params = NotchHaloRenderParams(
             palette: activePalette,
@@ -201,6 +274,8 @@ struct NotchHaloView: View {
         )
 
         let settledOut = fadeMultiplier == 0
+            && !contourSample.isActive
+            && model.contourState.targetOwner == nil
             && !levelActive
             && copyElapsed >= 0.52
             && pasteElapsed >= 0.48
@@ -208,14 +283,27 @@ struct NotchHaloView: View {
             && (model.entryMode != .blast || ignitionElapsed >= 3.54)
 
         ZStack {
-            if let indicator = model.modifierAccent, intensity < 0.25, !levelActive {
-                modifierOutlineLayer(indicator: indicator)
-            } else if model.restingOutlineActive && intensity < 0.25 {
-                restingOutlineLayer(palette: themeAdapted)
-            }
-
             if intensity > 0.005 {
                 primaryStyleLayer(params: params, entryElapsed: entryElapsed, reduceMotion: reduceMotion)
+            }
+
+            if contourSample.isActive {
+                NotchContourLineOverlay(
+                    islandRect: model.islandRect,
+                    floatingGap: model.floatingGap,
+                    palette: contourSample.palette.adapted(lightSurface: model.isLightSurface, style: model.surfaceStyle),
+                    opacity: contourSample.opacity,
+                    fillExtent: contourSample.fillExtent,
+                    railOpacity: contourSample.railOpacity,
+                    velocity: levelActive ? sampledLevel.velocity : 0,
+                    energy: (levelActive && !model.levelMuted) ? sampledLevel.energy : 0,
+                    isMutedPulseActive: levelActive && model.levelKind == .volume && model.levelMuted,
+                    musicBreathing: model.contourState.targetOwner == .music && !reduceMotion && model.motion != .none,
+                    time: now.timeIntervalSinceReferenceDate,
+                    thicknessScale: model.thicknessScale,
+                    pulseElapsed: max(0, now.timeIntervalSince(model.levelUpdatedAt)),
+                    reduceMotion: reduceMotion
+                )
             }
 
             if !reduceMotion && model.entryMode == .blast && ignitionElapsed < 3.54 {
@@ -264,35 +352,14 @@ struct NotchHaloView: View {
                     reduceMotion: reduceMotion
                 )
             }
-
-            if let kind = model.levelKind, levelRemaining > 0 {
-                let inT = min(1.0, max(0.0, now.timeIntervalSince(model.levelAppearAt) / 0.14))
-                let outT = min(1.0, max(0.0, levelRemaining / 0.38))
-                let smoothIn = reduceMotion ? 1.0 : inT * inT * (3.0 - 2.0 * inT)
-                let smoothOut = reduceMotion ? 1.0 : outT * outT * (3.0 - 2.0 * outT)
-                let fade = smoothIn * smoothOut
-                NotchLevelPrismOverlay(
-                    islandRect: model.islandRect,
-                    floatingGap: model.floatingGap,
-                    kind: kind,
-                    level: sampledLevel.value,
-                    muted: model.levelMuted,
-                    velocity: sampledLevel.velocity,
-                    energy: sampledLevel.energy,
-                    thicknessScale: model.thicknessScale,
-                    pulseElapsed: max(0, now.timeIntervalSince(model.levelUpdatedAt)),
-                    fade: fade,
-                    reduceMotion: reduceMotion
-                )
-            }
         }
         // Strictly mask out Vorssaint's notch interior so glow never enters the black shell.
         .mask(NotchOutsideShellMask(islandRect: model.islandRect, floatingGap: model.floatingGap))
         .modifier(NotchLightSurfaceFinish(isLightSurface: model.isLightSurface, surfaceStyle: model.surfaceStyle))
-        .onChange(of: settledOut) { _, finished in
-            if finished && (model.autoFadeDeadline != nil || model.levelKind != nil) {
+        .onChange(of: settledOut, initial: true) { _, finished in
+            if finished {
                 DispatchQueue.main.async {
-                    model.deactivate()
+                    model.settleIfIdle()
                 }
             }
         }
@@ -307,43 +374,6 @@ struct NotchHaloView: View {
             styleLayer.mask(sweepEntranceMask(progress: entryElapsed / 0.56))
         } else {
             styleLayer
-        }
-    }
-
-    @ViewBuilder
-    private func restingOutlineLayer(palette: NotchHaloPalette) -> some View {
-        let scale = CGFloat(model.thicknessScale)
-        let shape = NotchBottomUShape(
-            islandRect: model.islandRect,
-            armRun: 0,
-            floatingGap: model.floatingGap
-        )
-        ZStack {
-            shape
-                .stroke(palette.primary.color.opacity(0.42), style: StrokeStyle(lineWidth: 6.5 * scale, lineCap: .round, lineJoin: .round))
-                .blur(radius: 6.0 * scale)
-            shape
-                .stroke(palette.core.color.opacity(0.82), style: StrokeStyle(lineWidth: 2.2 * scale, lineCap: .round, lineJoin: .round))
-                .blur(radius: 0.6)
-        }
-    }
-
-    @ViewBuilder
-    private func modifierOutlineLayer(indicator: NotchModifierIndicator) -> some View {
-        let scale = CGFloat(model.thicknessScale)
-        let shape = NotchBottomUShape(
-            islandRect: model.islandRect,
-            armRun: 0,
-            floatingGap: model.floatingGap
-        )
-        let accent = indicator.accentRGB.color
-        ZStack {
-            shape
-                .stroke(accent.opacity(0.32), style: StrokeStyle(lineWidth: 5.5 * scale, lineCap: .round, lineJoin: .round))
-                .blur(radius: 5.0 * scale)
-            shape
-                .stroke(accent.opacity(0.68), style: StrokeStyle(lineWidth: 1.7 * scale, lineCap: .round, lineJoin: .round))
-                .blur(radius: 0.5)
         }
     }
 
@@ -426,87 +456,84 @@ struct NotchHaloView: View {
     }
 }
 
-/// Glance's SystemHUDLevelGlow (LevelPrismFrame + MutePrismFrame) rendered strictly
-/// along the exact Vorssaint notch outline (`armRun: 0`).
-struct NotchLevelPrismOverlay: View {
+/// Unified notch-hugging contour line (`armRun: 0`) shared by Audio, Brightness,
+/// Keyboard Backlight, Caps Lock / Shift modifiers, Music playback, and the resting outline.
+struct NotchContourLineOverlay: View {
     let islandRect: CGRect
     let floatingGap: CGFloat?
-    let kind: NotchLevelBarKind
-    let level: Double
-    let muted: Bool
+    let palette: NotchLevelPrismPalette
+    let opacity: Double
+    let fillExtent: Double
+    let railOpacity: Double
     let velocity: Double
     let energy: Double
+    let isMutedPulseActive: Bool
+    let musicBreathing: Bool
+    let time: TimeInterval
     let thicknessScale: Double
     let pulseElapsed: TimeInterval
-    let fade: Double
     let reduceMotion: Bool
 
     var body: some View {
         let shape = NotchBottomUShape(islandRect: islandRect, armRun: 0, floatingGap: floatingGap)
-        let prism = NotchLevelPrismPalette.palette(for: kind, muted: muted)
         let gradient = LinearGradient(
-            colors: [prism.trail.color, prism.lead.color, prism.core.color],
+            colors: [palette.trail.color, palette.lead.color, palette.core.color],
             startPoint: .leading,
             endPoint: .trailing
         )
         let scale = CGFloat(thicknessScale)
-
-        ZStack {
-            // Subtle dim full-contour rail
-            shape
-                .stroke(.white.opacity(0.18), style: StrokeStyle(lineWidth: 2.2 * scale, lineCap: .round, lineJoin: .round))
-
-            if muted && kind == .volume {
-                muteFrame(shape: shape, gradient: gradient, prism: prism, scale: scale)
-            } else {
-                levelFrame(shape: shape, gradient: gradient, prism: prism, scale: scale)
-            }
-        }
-        .opacity(fade)
-    }
-
-    @ViewBuilder
-    private func levelFrame(shape: NotchBottomUShape, gradient: LinearGradient,
-                            prism: NotchLevelPrismPalette, scale: CGFloat) -> some View {
-        let clamped = min(1.0, max(0.012, level))
+        let clampedExtent = min(1.0, max(0.012, fillExtent))
         let springEnergy = reduceMotion ? 0.0 : min(1.0, max(0.0, energy))
+        let breath = musicBreathing ? (0.90 + 0.10 * sin(time * 2.2)) : 1.0
 
         ZStack {
-            shape
-                .trim(from: 0, to: clamped)
-                .stroke(prism.lead.color.opacity(0.42 + 0.28 * springEnergy),
-                        style: StrokeStyle(lineWidth: (10.5 + 3.5 * springEnergy) * scale, lineCap: .round, lineJoin: .round))
-                .blur(radius: (10.0 + 1.5 * springEnergy) * scale)
-            shape
-                .trim(from: 0, to: clamped)
-                .stroke(gradient, style: StrokeStyle(lineWidth: 4.8 * scale, lineCap: .round, lineJoin: .round))
-                .blur(radius: 3.4 * scale)
-            shape
-                .trim(from: 0, to: clamped)
-                .stroke(gradient, style: StrokeStyle(lineWidth: 2.35 * scale, lineCap: .round, lineJoin: .round))
-                .blur(radius: 0.6)
-
-            if springEnergy > 0.02 {
-                let span = 0.05 + 0.05 * springEnergy
-                let crestFrom = velocity >= 0 ? max(0.0, clamped - span) : clamped
-                let crestTo = velocity >= 0 ? clamped : min(1.0, clamped + span)
+            if railOpacity > 0.005 {
                 shape
-                    .trim(from: crestFrom, to: max(crestFrom + 0.005, crestTo))
-                    .stroke(.white.opacity(0.85 * springEnergy),
-                            style: StrokeStyle(lineWidth: (3.4 + 1.0 * springEnergy) * scale, lineCap: .round, lineJoin: .round))
-                    .blur(radius: 2.2)
+                    .stroke(.white.opacity(0.18 * railOpacity),
+                            style: StrokeStyle(lineWidth: 2.2 * scale, lineCap: .round, lineJoin: .round))
+            }
+
+            if isMutedPulseActive {
+                muteFrame(shape: shape, gradient: gradient, scale: scale)
+            } else {
+                shape
+                    .trim(from: 0, to: clampedExtent)
+                    .stroke(palette.lead.color.opacity((0.38 + 0.28 * springEnergy) * breath),
+                            style: StrokeStyle(lineWidth: (8.5 + 4.0 * springEnergy) * scale, lineCap: .round, lineJoin: .round))
+                    .blur(radius: (8.0 + 2.5 * springEnergy) * scale)
+                shape
+                    .trim(from: 0, to: clampedExtent)
+                    .stroke(gradient.opacity(0.88 * breath),
+                            style: StrokeStyle(lineWidth: 4.2 * scale, lineCap: .round, lineJoin: .round))
+                    .blur(radius: 3.0 * scale)
+                shape
+                    .trim(from: 0, to: clampedExtent)
+                    .stroke(gradient,
+                            style: StrokeStyle(lineWidth: 2.2 * scale, lineCap: .round, lineJoin: .round))
+                    .blur(radius: 0.55)
+
+                if springEnergy > 0.02 {
+                    let span = 0.05 + 0.05 * springEnergy
+                    let crestFrom = velocity >= 0 ? max(0.0, clampedExtent - span) : clampedExtent
+                    let crestTo = velocity >= 0 ? clampedExtent : min(1.0, clampedExtent + span)
+                    shape
+                        .trim(from: crestFrom, to: max(crestFrom + 0.005, crestTo))
+                        .stroke(.white.opacity(0.85 * springEnergy),
+                                style: StrokeStyle(lineWidth: (3.4 + 1.0 * springEnergy) * scale, lineCap: .round, lineJoin: .round))
+                        .blur(radius: 2.2)
+                }
             }
         }
+        .opacity(opacity)
     }
 
     @ViewBuilder
-    private func muteFrame(shape: NotchBottomUShape, gradient: LinearGradient,
-                           prism: NotchLevelPrismPalette, scale: CGFloat) -> some View {
+    private func muteFrame(shape: NotchBottomUShape, gradient: LinearGradient, scale: CGFloat) -> some View {
         let pulse = !reduceMotion && pulseElapsed < 0.58 ? pulseElapsed / 0.58 : 1.0
         let spread = min(0.5, 0.08 + pulse * 0.42)
         ZStack {
             shape
-                .stroke(prism.lead.color.opacity(0.42),
+                .stroke(palette.lead.color.opacity(0.42),
                         style: StrokeStyle(lineWidth: 10.0 * scale, lineCap: .round, lineJoin: .round))
                 .blur(radius: 9.0 * scale)
             shape

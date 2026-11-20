@@ -114,6 +114,35 @@ struct NotchLevelPrismPalette: Equatable {
     let trail: NotchHaloRGB
     let core: NotchHaloRGB
 
+    init(lead: NotchHaloRGB, trail: NotchHaloRGB, core: NotchHaloRGB) {
+        self.lead = lead
+        self.trail = trail
+        self.core = core
+    }
+
+    init(halo: NotchHaloPalette) {
+        self.lead = halo.primary
+        self.trail = halo.secondary
+        self.core = halo.core
+    }
+
+    func blended(with other: NotchLevelPrismPalette, amount: Double) -> NotchLevelPrismPalette {
+        NotchLevelPrismPalette(
+            lead: lead.blended(with: other.lead, amount: amount),
+            trail: trail.blended(with: other.trail, amount: amount),
+            core: core.blended(with: other.core, amount: amount)
+        )
+    }
+
+    func adapted(lightSurface: Bool, style: NotchLightSurfaceStyle) -> NotchLevelPrismPalette {
+        guard lightSurface else { return self }
+        return NotchLevelPrismPalette(
+            lead: lead.adaptedForLightSurface(style),
+            trail: trail.adaptedForLightSurface(style),
+            core: core.adaptedForLightSurface(style)
+        )
+    }
+
     /// Glance ShortcutPrism.volume (cyan to electric indigo)
     static let volume = NotchLevelPrismPalette(
         lead: NotchHaloRGB(r: 0.10, g: 0.91, b: 1.00),
@@ -162,6 +191,8 @@ struct NotchHaloRGB: Equatable {
 
     func blended(with other: NotchHaloRGB, amount: Double) -> NotchHaloRGB {
         let t = min(1, max(0, amount))
+        if t <= 0 { return self }
+        if t >= 1 { return other }
         return NotchHaloRGB(
             r: r + (other.r - r) * t,
             g: g + (other.g - g) * t,
@@ -736,6 +767,29 @@ enum NotchModifierIndicator: Equatable {
         case .both: return NotchHaloRGB(r: 1.00, g: 0.84, b: 0.45)
         }
     }
+
+    var prismPalette: NotchLevelPrismPalette {
+        switch self {
+        case .capsLock:
+            return NotchLevelPrismPalette(
+                lead: NotchHaloRGB(r: 1.00, g: 0.78, b: 0.28),
+                trail: NotchHaloRGB(r: 0.95, g: 0.46, b: 0.10),
+                core: NotchHaloRGB(r: 1.00, g: 0.94, b: 0.72)
+            )
+        case .shift:
+            return NotchLevelPrismPalette(
+                lead: NotchHaloRGB(r: 0.56, g: 0.88, b: 1.00),
+                trail: NotchHaloRGB(r: 0.24, g: 0.56, b: 0.98),
+                core: NotchHaloRGB(r: 0.88, g: 0.97, b: 1.00)
+            )
+        case .both:
+            return NotchLevelPrismPalette(
+                lead: NotchHaloRGB(r: 1.00, g: 0.84, b: 0.45),
+                trail: NotchHaloRGB(r: 0.94, g: 0.54, b: 0.16),
+                core: NotchHaloRGB(r: 1.00, g: 0.96, b: 0.80)
+            )
+        }
+    }
 }
 
 /// Debounces held Shift keys (220ms) so fast capital typing never flickers the island,
@@ -792,5 +846,206 @@ struct NotchPasteDetector: Equatable {
         guard now - lastReportedAt >= Self.debounceInterval else { return false }
         lastReportedAt = now
         return true
+    }
+}
+
+/// Identifies which signal currently owns the single notch-hugging contour line.
+enum NotchContourLineOwner: Equatable {
+    case level(kind: NotchLevelBarKind, muted: Bool)
+    case modifier(NotchModifierIndicator)
+    case music
+    case resting
+
+    var suppressesFullHalo: Bool {
+        switch self {
+        case .level, .modifier: return true
+        case .music, .resting: return false
+        }
+    }
+
+    var isTrimmedLevel: Bool {
+        if case .level(_, let muted) = self { return !muted }
+        return false
+    }
+}
+
+/// Instantaneous sampled visual state of the unified contour line.
+struct NotchContourLineSample: Equatable {
+    let palette: NotchLevelPrismPalette
+    let opacity: Double
+    let fillExtent: Double
+    let railOpacity: Double
+    let isActive: Bool
+}
+
+/// Manages single-owner priority arbitration and smooth color / trim / opacity
+/// handoffs across volume, brightness, keyboard modifiers, music playback, and resting outline.
+struct NotchContourLineState: Equatable {
+    private(set) var targetOwner: NotchContourLineOwner?
+    private(set) var startPalette: NotchLevelPrismPalette = .volume
+    private(set) var targetPalette: NotchLevelPrismPalette = .volume
+    private(set) var startOpacity: Double = 0
+    private(set) var targetOpacity: Double = 0
+    private(set) var startExtent: Double = 1
+    private(set) var targetUsesLevel: Bool = false
+    private(set) var frozenTargetExtent: Double = 1
+    private(set) var startRailOpacity: Double = 0
+    private(set) var targetRailOpacity: Double = 0
+    private(set) var transitionStart: TimeInterval = 0
+    private(set) var transitionDuration: TimeInterval = 0.22
+
+    static func resolveOwner(levelKind: NotchLevelBarKind?, levelMuted: Bool,
+                             modifier: NotchModifierIndicator?, musicActive: Bool,
+                             restingActive: Bool, fullHaloActive: Bool) -> NotchContourLineOwner? {
+        if let levelKind { return .level(kind: levelKind, muted: levelMuted) }
+        if let modifier { return .modifier(modifier) }
+        if fullHaloActive { return nil }
+        if musicActive { return .music }
+        if restingActive { return .resting }
+        return nil
+    }
+
+    static func palette(for owner: NotchContourLineOwner, musicPalette: NotchHaloPalette,
+                        restingPalette: NotchHaloPalette) -> NotchLevelPrismPalette {
+        switch owner {
+        case .level(let kind, let muted):
+            return NotchLevelPrismPalette.palette(for: kind, muted: muted)
+        case .modifier(let indicator):
+            return indicator.prismPalette
+        case .music:
+            return NotchLevelPrismPalette(halo: musicPalette)
+        case .resting:
+            return NotchLevelPrismPalette(halo: restingPalette)
+        }
+    }
+
+    mutating func update(owner: NotchContourLineOwner?, palette: NotchLevelPrismPalette?,
+                         liveLevel: Double, at now: TimeInterval, reduceMotion: Bool = false) {
+        let clampedLevel = max(0.012, min(1.0, liveLevel.isFinite ? liveLevel : 0))
+        let current = sample(at: now, liveLevel: clampedLevel, reduceMotion: reduceMotion)
+
+        if owner == nil && targetOwner == nil {
+            return
+        }
+        if owner == targetOwner && palette == targetPalette {
+            return
+        }
+
+        let wasVisible = current.opacity > 0.001
+
+        if let owner, let palette {
+            let newUsesLevel = owner.isTrimmedLevel
+            let newRail = newUsesLevel ? 1.0 : 0.0
+            if !wasVisible {
+                startPalette = palette
+                targetPalette = palette
+                startOpacity = 0
+                targetOpacity = 1
+                startExtent = newUsesLevel ? clampedLevel : 1.0
+                targetUsesLevel = newUsesLevel
+                frozenTargetExtent = 1.0
+                startRailOpacity = newRail
+                targetRailOpacity = newRail
+                transitionDuration = newUsesLevel ? 0.14 : 0.20
+            } else {
+                let previousOwner = targetOwner
+                let previousWasTrimmed = targetUsesLevel
+                startPalette = current.palette
+                targetPalette = palette
+                startOpacity = current.opacity
+                targetOpacity = 1.0
+                startExtent = (previousWasTrimmed && newUsesLevel) ? clampedLevel : current.fillExtent
+                targetUsesLevel = newUsesLevel
+                frozenTargetExtent = 1.0
+                startRailOpacity = current.railOpacity
+                targetRailOpacity = newRail
+                if newUsesLevel && !previousWasTrimmed {
+                    transitionDuration = 0.16
+                } else if previousWasTrimmed && !newUsesLevel {
+                    transitionDuration = 0.32
+                } else if previousOwner == .music && owner == .music {
+                    transitionDuration = 0.32
+                } else {
+                    transitionDuration = 0.22
+                }
+            }
+            targetOwner = owner
+            transitionStart = now
+        } else {
+            if !wasVisible {
+                targetOwner = nil
+                startOpacity = 0
+                targetOpacity = 0
+                transitionDuration = 0
+                return
+            }
+            startPalette = current.palette
+            targetPalette = current.palette
+            startExtent = current.fillExtent
+            targetUsesLevel = false
+            frozenTargetExtent = current.fillExtent
+            startRailOpacity = current.railOpacity
+            targetRailOpacity = current.railOpacity
+            startOpacity = current.opacity
+            targetOpacity = 0.0
+            targetOwner = nil
+            transitionStart = now
+            transitionDuration = 0.36
+        }
+    }
+
+    func sample(at now: TimeInterval, liveLevel: Double, reduceMotion: Bool = false) -> NotchContourLineSample {
+        let clampedLevel = max(0.012, min(1.0, liveLevel.isFinite ? liveLevel : 0))
+        let rawT = (reduceMotion || transitionDuration <= 0)
+            ? 1.0
+            : min(1.0, max(0.0, (now - transitionStart) / transitionDuration))
+        let targetExtent = targetUsesLevel ? clampedLevel : frozenTargetExtent
+        if rawT <= 0.0 {
+            return NotchContourLineSample(
+                palette: startPalette,
+                opacity: startOpacity,
+                fillExtent: startExtent,
+                railOpacity: startRailOpacity,
+                isActive: startOpacity > 0.001
+            )
+        }
+        if rawT >= 1.0 {
+            return NotchContourLineSample(
+                palette: targetPalette,
+                opacity: targetOpacity,
+                fillExtent: targetExtent,
+                railOpacity: targetRailOpacity,
+                isActive: targetOpacity > 0.001
+            )
+        }
+        let eased = 1.0 - pow(1.0 - rawT, 3.0)
+
+        let palette = startPalette.blended(with: targetPalette, amount: eased)
+        let opacity = startOpacity + (targetOpacity - startOpacity) * eased
+        let fillExtent = startExtent + (targetExtent - startExtent) * eased
+        let railOpacity = startRailOpacity + (targetRailOpacity - startRailOpacity) * eased
+
+        return NotchContourLineSample(
+            palette: palette,
+            opacity: opacity,
+            fillExtent: fillExtent,
+            railOpacity: railOpacity,
+            isActive: opacity > 0.001
+        )
+    }
+
+    mutating func reset() {
+        targetOwner = nil
+        startPalette = .volume
+        targetPalette = .volume
+        startOpacity = 0
+        targetOpacity = 0
+        startExtent = 1
+        targetUsesLevel = false
+        frozenTargetExtent = 1
+        startRailOpacity = 0
+        targetRailOpacity = 0
+        transitionStart = 0
+        transitionDuration = 0.22
     }
 }

@@ -29,6 +29,11 @@ final class NotchHaloController {
     private var lastFullscreenHidden = false
     private weak var lastScreen: NSScreen?
 
+    private var lastMusicPlaying = false
+    private var lastMusicTint: NotchArtworkTint?
+    private var levelExpiryWork: DispatchWorkItem?
+    private var haloExpiryWork: DispatchWorkItem?
+
     private init() {
         surfaceProbe.$isLightSurface
             .receive(on: DispatchQueue.main)
@@ -87,13 +92,12 @@ final class NotchHaloController {
 
         let resting = NotchLightsSupport.showsRestingOutline()
         viewModel.restingOutlineActive = resting
-        if viewModel.state == .idle {
-            viewModel.palette = theme.palette
-            viewModel.isVisible = resting || viewModel.levelKind != nil || viewModel.modifierAccent != nil
-            viewModel.isAnimating = viewModel.isVisible
-        } else if viewModel.state == .running && theme != .adaptive {
+        viewModel.musicActive = lastMusicPlaying && NotchLightsSupport.tracksMusic()
+        viewModel.musicPalette = resolvedMusicPalette(tint: lastMusicTint, theme: theme)
+        if viewModel.state == .running && theme != .adaptive {
             viewModel.palette = theme.palette
         }
+        viewModel.refreshContourTarget(at: Date())
         repositionPanel()
     }
 
@@ -115,19 +119,27 @@ final class NotchHaloController {
 
     func updateAgentSessions(_ live: [AgentLiveSession]) {
         guard NotchLightsSupport.isEnabled(), NotchSupport.isEnabled(), NotchLightsSupport.tracksAgents() else {
-            if viewModel.state == .running { viewModel.deactivate() }
+            if viewModel.state == .running {
+                haloExpiryWork?.cancel()
+                haloExpiryWork = nil
+                viewModel.expireHalo(at: Date())
+            }
             return
         }
         if let active = live.first {
             let palette = viewModel.outlineTheme == .adaptive
                 ? Self.palette(from: active.provider.tint, fallback: .running)
                 : viewModel.outlineTheme.palette
+            haloExpiryWork?.cancel()
+            haloExpiryWork = nil
             if viewModel.state != .running || viewModel.palette != palette || viewModel.autoFadeDeadline != nil {
                 viewModel.beginOrTransition(to: .running, palette: palette, holdDuration: nil)
                 repositionPanel()
             }
         } else if viewModel.state == .running && viewModel.autoFadeDeadline == nil {
-            viewModel.autoFadeDeadline = Date().addingTimeInterval(0.45)
+            let hold = 0.45
+            viewModel.autoFadeDeadline = Date().addingTimeInterval(hold)
+            scheduleHaloExpiry(after: hold)
         }
     }
 
@@ -136,37 +148,34 @@ final class NotchHaloController {
         switch event {
         case .finished:
             viewModel.beginOrTransition(to: .success, palette: .success, holdDuration: 2.4)
+            scheduleHaloExpiry(after: 2.4)
             triggerEdgeWave(palette: .success)
         case .limitWarning:
             viewModel.beginOrTransition(to: .warning, palette: .warning, holdDuration: 2.8)
+            scheduleHaloExpiry(after: 2.8)
             triggerEdgeWave(palette: .warning)
         case .limitReset:
             viewModel.beginOrTransition(to: .success, palette: .success, holdDuration: 2.0)
+            scheduleHaloExpiry(after: 2.0)
             triggerEdgeWave(palette: .success)
         case .budgetReached:
             viewModel.beginOrTransition(to: .error, palette: .error, holdDuration: 3.0)
+            scheduleHaloExpiry(after: 3.0)
             triggerEdgeWave(palette: .error)
         }
         repositionPanel()
     }
 
     func updateMusic(playing: Bool, tint: NotchArtworkTint?) {
-        guard NotchLightsSupport.isEnabled(), NotchSupport.isEnabled(), NotchLightsSupport.tracksMusic() else {
-            if viewModel.state == .music { viewModel.deactivate() }
-            return
+        lastMusicPlaying = playing
+        lastMusicTint = tint
+        let active = playing && NotchLightsSupport.isEnabled() && NotchSupport.isEnabled() && NotchLightsSupport.tracksMusic()
+        viewModel.musicActive = active
+        if active {
+            viewModel.musicPalette = resolvedMusicPalette(tint: tint, theme: viewModel.outlineTheme)
         }
-        if viewModel.state == .running && viewModel.autoFadeDeadline == nil { return }
-        if playing {
-            let palette: NotchHaloPalette = viewModel.outlineTheme == .adaptive
-                ? (tint.map { NotchHaloPalette.matching(r: $0.red, g: $0.green, b: $0.blue) } ?? .running)
-                : viewModel.outlineTheme.palette
-            if viewModel.state != .music || viewModel.palette != palette {
-                viewModel.beginOrTransition(to: .music, palette: palette, holdDuration: nil)
-                repositionPanel()
-            }
-        } else if viewModel.state == .music {
-            viewModel.autoFadeDeadline = Date().addingTimeInterval(0.55)
-        }
+        viewModel.refreshContourTarget(at: Date())
+        repositionPanel()
     }
 
     func triggerCopySweep() {
@@ -184,16 +193,14 @@ final class NotchHaloController {
     func triggerLevelHUD(kind: NotchLevelBarKind, level: Double, muted: Bool, holdDuration: TimeInterval = 1.9) {
         guard NotchLightsSupport.isEnabled(), NotchSupport.isEnabled(), NotchLightsSupport.tracksLevelBars() else { return }
         viewModel.triggerLevelHUD(kind: kind, level: level, muted: muted, holdDuration: holdDuration)
+        scheduleLevelExpiry(after: holdDuration)
         repositionPanel()
     }
 
     func updateModifierIndicator(_ indicator: NotchModifierIndicator?) {
         viewModel.modifierAccent = indicator
         guard NotchLightsSupport.isEnabled(), NotchSupport.isEnabled() else { return }
-        if viewModel.state == .idle {
-            viewModel.isVisible = viewModel.restingOutlineActive || viewModel.levelKind != nil || indicator != nil
-            viewModel.isAnimating = viewModel.isVisible
-        }
+        viewModel.refreshContourTarget(at: Date())
         repositionPanel()
     }
 
@@ -203,13 +210,15 @@ final class NotchHaloController {
         if let kind = Self.levelBarKind(for: notice.event), NotchLightsSupport.tracksLevelBars() {
             let level = notice.level ?? 0
             let muted = kind == .volume && level <= 0.001
-            viewModel.triggerLevelHUD(kind: kind, level: level, muted: muted, holdDuration: max(1.5, notice.event.duration + 0.35))
+            let hold = max(1.5, notice.event.duration + 0.35)
+            viewModel.triggerLevelHUD(kind: kind, level: level, muted: muted, holdDuration: hold)
+            scheduleLevelExpiry(after: hold)
             repositionPanel()
             return
         }
 
-        // Copy and paste use dedicated subtle hairline sweeps, never the full halo burst.
-        if notice.event == .clipboard { return }
+        // Copy, paste, and music track changes use the contour line / hairline sweeps, never the full halo burst.
+        if notice.event == .clipboard || notice.event == .track { return }
 
         guard NotchLightsSupport.tracksNotices() else { return }
         let palette: NotchHaloPalette = {
@@ -219,11 +228,6 @@ final class NotchHaloController {
             switch notice.event {
             case .battery, .timer, .watch:
                 return .warning
-            case .track:
-                if viewModel.outlineTheme == .adaptive, let tint = NotchMusicService.shared.artworkTint {
-                    return .matching(r: tint.red, g: tint.green, b: tint.blue)
-                }
-                return viewModel.outlineTheme.palette
             default:
                 return viewModel.outlineTheme.palette
             }
@@ -233,6 +237,7 @@ final class NotchHaloController {
             viewModel.beginOrTransition(to: .running, palette: palette, holdDuration: hold)
         }
         viewModel.triggerContourPulse(palette: palette, holdDuration: hold)
+        scheduleHaloExpiry(after: hold)
         if notice.event == .timer || notice.event == .watch {
             triggerEdgeWave(palette: palette)
         }
@@ -244,6 +249,7 @@ final class NotchHaloController {
         ensureFallbackLayout()
         viewModel.beginOrTransition(to: .running, palette: viewModel.outlineTheme.palette, holdDuration: 3.2)
         viewModel.triggerContourPulse(palette: viewModel.outlineTheme.palette, holdDuration: 3.2)
+        scheduleHaloExpiry(after: 3.2)
         repositionPanel(forceVisible: true)
     }
 
@@ -266,15 +272,48 @@ final class NotchHaloController {
         syncWithPreferences()
         ensureFallbackLayout()
         viewModel.triggerLevelHUD(kind: kind, level: kind == .volume ? 0.68 : 0.75, muted: false, holdDuration: 2.2)
+        scheduleLevelExpiry(after: 2.2)
         repositionPanel(forceVisible: true)
     }
 
     func stop() {
+        levelExpiryWork?.cancel()
+        levelExpiryWork = nil
+        haloExpiryWork?.cancel()
+        haloExpiryWork = nil
         edgeWave.stop()
-        viewModel.restingOutlineActive = false
-        viewModel.modifierAccent = nil
         viewModel.deactivate()
         panel?.orderOut(nil)
+    }
+
+    private func resolvedMusicPalette(tint: NotchArtworkTint?, theme: NotchOutlineTheme) -> NotchHaloPalette {
+        theme == .adaptive
+            ? (tint.map { NotchHaloPalette.matching(r: $0.red, g: $0.green, b: $0.blue) } ?? .running)
+            : theme.palette
+    }
+
+    private func scheduleLevelExpiry(after holdDuration: TimeInterval) {
+        levelExpiryWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.levelExpiryWork = nil
+            self.viewModel.expireLevelHUD(at: Date())
+            self.repositionPanel()
+        }
+        levelExpiryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + holdDuration + 0.01, execute: work)
+    }
+
+    private func scheduleHaloExpiry(after holdDuration: TimeInterval) {
+        haloExpiryWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.haloExpiryWork = nil
+            self.viewModel.expireHalo(at: Date())
+            self.repositionPanel()
+        }
+        haloExpiryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + holdDuration + 0.01, execute: work)
     }
 
     // MARK: Internal layout & windowing

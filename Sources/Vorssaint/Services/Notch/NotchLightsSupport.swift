@@ -25,12 +25,30 @@ enum NotchHaloArmWidth: String, CaseIterable, Identifiable, Equatable {
         case .extraWide: return min(520, 440)
         }
     }
+
+    var glowSpread: Double {
+        switch self {
+        case .narrow: return 0.62
+        case .medium: return 1.00
+        case .wide: return 1.42
+        case .extraWide: return 1.88
+        }
+    }
 }
 
 enum NotchHaloEntryMode: String, CaseIterable, Identifiable, Equatable {
     case sweep, trace, blast
 
     var id: String { rawValue }
+
+    func duration(fast: Bool) -> TimeInterval {
+        let scale = fast ? 0.68 : 1.0
+        switch self {
+        case .sweep: return 0.24 * scale
+        case .trace: return 0.28 * scale
+        case .blast: return 0.22 * scale
+        }
+    }
 }
 
 enum NotchHaloMotion: String, CaseIterable, Identifiable, Equatable {
@@ -43,6 +61,21 @@ enum NotchHaloTransitionEffect: String, CaseIterable, Identifiable, Equatable {
     case hybrid, whiteFlash, hueSlide, shockwave, pulse, supernova, rings, prism, strobe, bigBang, off
 
     var id: String { rawValue }
+
+    func duration(fast: Bool) -> TimeInterval {
+        let base: TimeInterval
+        switch self {
+        case .off: return 0
+        case .whiteFlash: base = 0.22
+        case .strobe: base = 0.24
+        case .shockwave: base = 0.26
+        case .hueSlide, .hybrid: base = 0.28
+        case .pulse: base = 0.30
+        case .supernova, .prism: base = 0.32
+        case .rings, .bigBang: base = 0.34
+        }
+        return fast ? base * 0.80 : base
+    }
 }
 
 enum NotchLightSurfaceStyle: String, CaseIterable, Identifiable, Equatable {
@@ -263,6 +296,13 @@ struct NotchHaloPalette: Equatable {
         rim: NotchHaloRGB(r: 0.68, g: 0.62, b: 0.48)
     )
 
+    static let paste = NotchHaloPalette(
+        primary: NotchHaloRGB(r: 0.28, g: 0.94, b: 0.82),
+        secondary: NotchHaloRGB(r: 0.14, g: 0.72, b: 0.92),
+        core: NotchHaloRGB(r: 0.86, g: 1.00, b: 0.96),
+        rim: NotchHaloRGB(r: 0.22, g: 0.86, b: 0.76)
+    )
+
     static func matching(r: Double, g: Double, b: Double) -> NotchHaloPalette {
         let base = NotchHaloRGB(r: min(1, max(0, r)), g: min(1, max(0, g)), b: min(1, max(0, b)))
         return NotchHaloPalette(
@@ -420,6 +460,14 @@ enum NotchLightsSupport {
         defaults.object(forKey: DefaultsKey.notchLightsFullWidthModifiers) as? Bool ?? true
     }
 
+    static func fullWidthCopy(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: DefaultsKey.notchLightsFullWidthCopy) as? Bool ?? true
+    }
+
+    static func fullWidthNotices(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: DefaultsKey.notchLightsFullWidthNotices) as? Bool ?? true
+    }
+
     static func fullWidthResting(in defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: DefaultsKey.notchLightsFullWidthResting) as? Bool ?? true
     }
@@ -427,6 +475,8 @@ enum NotchLightsSupport {
     static func fullWidth(for owner: NotchContourLineOwner, in defaults: UserDefaults = .standard) -> Bool {
         switch owner {
         case .level: return fullWidthLevelBars(in: defaults)
+        case .clipboard: return fullWidthCopy(in: defaults)
+        case .preview, .notice: return fullWidthNotices(in: defaults)
         case .modifier: return fullWidthModifiers(in: defaults)
         case .agent: return fullWidthAgents(in: defaults)
         case .music: return fullWidthMusic(in: defaults)
@@ -439,6 +489,8 @@ enum NotchLightsSupport {
             || fullWidthAgents(in: defaults)
             || fullWidthMusic(in: defaults)
             || fullWidthModifiers(in: defaults)
+            || fullWidthCopy(in: defaults)
+            || fullWidthNotices(in: defaults)
             || fullWidthResting(in: defaults)
     }
 
@@ -898,25 +950,56 @@ struct NotchPasteDetector: Equatable {
     }
 }
 
-/// Identifies which signal currently owns the single notch-hugging contour line.
+/// Identifies which signal currently owns the single notch-hugging / full-screen contour bar.
 enum NotchContourLineOwner: Equatable {
     case level(kind: NotchLevelBarKind, muted: Bool)
+    case clipboard(isPaste: Bool)
+    case preview
     case modifier(NotchModifierIndicator)
+    case notice
     case agent
     case music
     case resting
 
-    var suppressesFullHalo: Bool {
+    var priority: Int {
         switch self {
-        case .level, .modifier: return true
-        case .agent, .music, .resting: return false
+        case .level: return 7
+        case .clipboard: return 6
+        case .preview: return 5
+        case .modifier: return 4
+        case .notice: return 3
+        case .agent: return 2
+        case .music: return 1
+        case .resting: return 0
         }
+    }
+
+    var isLevel: Bool {
+        if case .level = self { return true }
+        return false
     }
 
     var isTrimmedLevel: Bool {
         if case .level(_, let muted) = self { return !muted }
         return false
     }
+
+    var isClipboard: Bool {
+        if case .clipboard = self { return true }
+        return false
+    }
+
+    var isAmbientResting: Bool {
+        self == .resting
+    }
+}
+
+/// Lifecycle transition event emitted by `NotchContourLineState.update(...)`.
+enum NotchContourLineChange: Equatable {
+    case none
+    case entered
+    case transitioned
+    case exited
 }
 
 /// Instantaneous sampled visual state of the unified contour line.
@@ -930,7 +1013,8 @@ struct NotchContourLineSample: Equatable {
 }
 
 /// Manages single-owner priority arbitration and smooth color / trim / opacity / width
-/// handoffs across volume, brightness, keyboard modifiers, agents, music playback, and resting outline.
+/// handoffs across volume, brightness, keyboard backlight, copy/paste, previews,
+/// Caps Lock / Shift modifiers, notices, agents, music playback, and resting outline.
 struct NotchContourLineState: Equatable {
     private(set) var targetOwner: NotchContourLineOwner?
     private(set) var startPalette: NotchLevelPrismPalette = .volume
@@ -945,28 +1029,42 @@ struct NotchContourLineState: Equatable {
     private(set) var startArmSpan: Double = 0
     private(set) var targetArmSpan: Double = 0
     private(set) var transitionStart: TimeInterval = 0
-    private(set) var transitionDuration: TimeInterval = 0.22
+    private(set) var transitionDuration: TimeInterval = 0.18
 
     static func resolveOwner(levelKind: NotchLevelBarKind?, levelMuted: Bool,
-                             modifier: NotchModifierIndicator?, agentActive: Bool,
-                             musicActive: Bool, restingActive: Bool,
-                             fullHaloActive: Bool) -> NotchContourLineOwner? {
+                             clipboardPaste: Bool?, previewActive: Bool,
+                             modifier: NotchModifierIndicator?, noticeActive: Bool,
+                             agentActive: Bool, musicActive: Bool,
+                             restingActive: Bool) -> NotchContourLineOwner? {
         if let levelKind { return .level(kind: levelKind, muted: levelMuted) }
+        if let clipboardPaste { return .clipboard(isPaste: clipboardPaste) }
+        if previewActive { return .preview }
         if let modifier { return .modifier(modifier) }
-        if fullHaloActive { return nil }
+        if noticeActive { return .notice }
         if agentActive { return .agent }
         if musicActive { return .music }
         if restingActive { return .resting }
         return nil
     }
 
-    static func palette(for owner: NotchContourLineOwner, agentPalette: NotchHaloPalette,
-                        musicPalette: NotchHaloPalette, restingPalette: NotchHaloPalette) -> NotchLevelPrismPalette {
+    static func palette(for owner: NotchContourLineOwner,
+                        clipboardPalette: NotchHaloPalette,
+                        previewPalette: NotchHaloPalette,
+                        noticePalette: NotchHaloPalette,
+                        agentPalette: NotchHaloPalette,
+                        musicPalette: NotchHaloPalette,
+                        restingPalette: NotchHaloPalette) -> NotchLevelPrismPalette {
         switch owner {
         case .level(let kind, let muted):
             return NotchLevelPrismPalette.palette(for: kind, muted: muted)
+        case .clipboard:
+            return NotchLevelPrismPalette(halo: clipboardPalette)
+        case .preview:
+            return NotchLevelPrismPalette(halo: previewPalette)
         case .modifier(let indicator):
             return indicator.prismPalette
+        case .notice:
+            return NotchLevelPrismPalette(halo: noticePalette)
         case .agent:
             return NotchLevelPrismPalette(halo: agentPalette)
         case .music:
@@ -976,18 +1074,19 @@ struct NotchContourLineState: Equatable {
         }
     }
 
+    @discardableResult
     mutating func update(owner: NotchContourLineOwner?, palette: NotchLevelPrismPalette?,
                          fullWidth: Bool = false, liveLevel: Double,
-                         at now: TimeInterval, reduceMotion: Bool = false) {
+                         at now: TimeInterval, reduceMotion: Bool = false) -> NotchContourLineChange {
         let clampedLevel = max(0.012, min(1.0, liveLevel.isFinite ? liveLevel : 0))
         let current = sample(at: now, liveLevel: clampedLevel, reduceMotion: reduceMotion)
         let newArmSpan = fullWidth ? 1.0 : 0.0
 
         if owner == nil && targetOwner == nil {
-            return
+            return .none
         }
         if owner == targetOwner && palette == targetPalette && abs(newArmSpan - targetArmSpan) < 0.0001 {
-            return
+            return .none
         }
 
         let wasVisible = current.opacity > 0.001
@@ -995,6 +1094,8 @@ struct NotchContourLineState: Equatable {
         if let owner, let palette {
             let newUsesLevel = owner.isTrimmedLevel
             let newRail = newUsesLevel ? 1.0 : 0.0
+            let change: NotchContourLineChange
+
             if !wasVisible {
                 startPalette = palette
                 targetPalette = palette
@@ -1007,10 +1108,21 @@ struct NotchContourLineState: Equatable {
                 targetRailOpacity = newRail
                 startArmSpan = newArmSpan
                 targetArmSpan = newArmSpan
-                transitionDuration = newUsesLevel ? 0.14 : 0.20
+                if owner.isClipboard {
+                    transitionDuration = 0.10
+                } else if owner.isTrimmedLevel {
+                    transitionDuration = 0.12
+                } else {
+                    transitionDuration = 0.18
+                }
+                change = .entered
             } else {
                 let previousOwner = targetOwner
                 let previousWasTrimmed = targetUsesLevel
+                let widthOnlyToggle = previousOwner == owner
+                    && palette == targetPalette
+                    && abs(newArmSpan - current.armSpan) > 0.001
+
                 startPalette = current.palette
                 targetPalette = palette
                 startOpacity = current.opacity
@@ -1022,28 +1134,48 @@ struct NotchContourLineState: Equatable {
                 targetRailOpacity = newRail
                 startArmSpan = current.armSpan
                 targetArmSpan = newArmSpan
-                if newUsesLevel && !previousWasTrimmed {
+
+                if previousOwner == nil {
+                    transitionDuration = owner.isClipboard ? 0.10 : (owner.isLevel ? 0.12 : 0.18)
+                    change = .entered
+                } else if owner.isClipboard {
+                    transitionDuration = 0.10
+                    change = .transitioned
+                } else if previousOwner?.isClipboard == true {
                     transitionDuration = 0.16
-                } else if previousWasTrimmed && !newUsesLevel {
-                    transitionDuration = 0.32
-                } else if previousOwner == owner && abs(newArmSpan - current.armSpan) > 0.001 && palette == targetPalette {
-                    transitionDuration = 0.24
-                } else if (previousOwner == .music && owner == .music) || (previousOwner == .agent && owner == .agent) {
-                    transitionDuration = 0.32
+                    change = .none
+                } else if owner.isLevel {
+                    transitionDuration = 0.14
+                    change = .none
+                } else if previousWasTrimmed {
+                    transitionDuration = 0.26
+                    change = .none
+                } else if widthOnlyToggle {
+                    transitionDuration = 0.22
+                    change = .none
+                } else if let previousOwner, previousOwner == owner {
+                    transitionDuration = 0.26
+                    change = .transitioned
+                } else if let previousOwner, owner.priority > previousOwner.priority {
+                    transitionDuration = 0.18
+                    change = .transitioned
                 } else {
                     transitionDuration = 0.22
+                    change = .none
                 }
             }
             targetOwner = owner
             transitionStart = now
+            return change
         } else {
             if !wasVisible {
                 targetOwner = nil
                 startOpacity = 0
                 targetOpacity = 0
                 transitionDuration = 0
-                return
+                return .none
             }
+            let wasClipboard = targetOwner?.isClipboard == true
             startPalette = current.palette
             targetPalette = current.palette
             startExtent = current.fillExtent
@@ -1057,7 +1189,8 @@ struct NotchContourLineState: Equatable {
             targetOpacity = 0.0
             targetOwner = nil
             transitionStart = now
-            transitionDuration = 0.36
+            transitionDuration = wasClipboard ? 0.18 : 0.30
+            return .exited
         }
     }
 

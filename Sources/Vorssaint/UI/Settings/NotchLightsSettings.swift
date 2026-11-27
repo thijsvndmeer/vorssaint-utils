@@ -28,6 +28,8 @@ struct NotchLightsSettingsCard: View {
     @AppStorage(DefaultsKey.notchLightsFullWidthAgents) private var fullWidthAgents = true
     @AppStorage(DefaultsKey.notchLightsFullWidthMusic) private var fullWidthMusic = true
     @AppStorage(DefaultsKey.notchLightsFullWidthModifiers) private var fullWidthModifiers = true
+    @AppStorage(DefaultsKey.notchLightsFullWidthCopy) private var fullWidthCopy = true
+    @AppStorage(DefaultsKey.notchLightsFullWidthNotices) private var fullWidthNotices = true
     @AppStorage(DefaultsKey.notchLightsFullWidthResting) private var fullWidthResting = true
 
     var body: some View {
@@ -137,6 +139,8 @@ struct NotchLightsSettingsCard: View {
                     Toggle(lights.agentActivity, isOn: $fullWidthAgents)
                     Toggle(lights.musicActivity, isOn: $fullWidthMusic)
                     Toggle(lights.modifierActivity, isOn: $fullWidthModifiers)
+                    Toggle(lights.copySweep, isOn: $fullWidthCopy)
+                    Toggle(lights.notices, isOn: $fullWidthNotices)
                     Toggle(lights.restingOutline, isOn: $fullWidthResting)
                 }
                 .toggleStyle(.checkbox)
@@ -164,7 +168,8 @@ struct NotchLightsSettingsCard: View {
             String(lightsEnabled), haloStyle, outlineTheme, String(restingOutline), armWidth, String(thickness),
             entryMode, motion, transition, String(edgeWaveEnabled), lightSurfaceStyle,
             String(agentActivity), String(musicActivity), String(copySweep), String(notices), String(levelBars),
-            String(fullWidthLevelBars), String(fullWidthAgents), String(fullWidthMusic), String(fullWidthModifiers), String(fullWidthResting)
+            String(fullWidthLevelBars), String(fullWidthAgents), String(fullWidthMusic),
+            String(fullWidthModifiers), String(fullWidthCopy), String(fullWidthNotices), String(fullWidthResting)
         ]) { _, _ in
             NotchHaloController.shared.syncWithPreferences()
         }

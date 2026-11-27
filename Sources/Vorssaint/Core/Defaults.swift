@@ -979,6 +979,8 @@ enum DefaultsKey {
     static let notchLightsFullWidthAgents = "notchLightsFullWidthAgents"
     static let notchLightsFullWidthMusic = "notchLightsFullWidthMusic"
     static let notchLightsFullWidthModifiers = "notchLightsFullWidthModifiers"
+    static let notchLightsFullWidthCopy = "notchLightsFullWidthCopy"
+    static let notchLightsFullWidthNotices = "notchLightsFullWidthNotices"
     static let notchLightsFullWidthResting = "notchLightsFullWidthResting"
     static let notchLowBatteryEarly = "notchLowBatteryEarly"
     static let notchLowBatteryEarlyThreshold = "notchLowBatteryEarlyThreshold"
@@ -1606,6 +1608,8 @@ enum Defaults {
         DefaultsKey.notchLightsFullWidthAgents: true,
         DefaultsKey.notchLightsFullWidthMusic: true,
         DefaultsKey.notchLightsFullWidthModifiers: true,
+        DefaultsKey.notchLightsFullWidthCopy: true,
+        DefaultsKey.notchLightsFullWidthNotices: true,
         DefaultsKey.notchLightsFullWidthResting: true,
         DefaultsKey.notchOpenOnHover: false,
         DefaultsKey.notchShortcutEnabled: false,
